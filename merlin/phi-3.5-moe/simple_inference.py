@@ -9,19 +9,14 @@ model = AutoModelForCausalLM.from_pretrained(
     "/mnt/llm_team/Phi-3.5-MoE-instruct",  
     device_map="auto",      
     torch_dtype="auto",  
-    trust_remote_code=False,  
+    trust_remote_code=True,  
 ) 
 
 tokenizer = AutoTokenizer.from_pretrained("/mnt/llm_team/Phi-3.5-MoE-instruct") 
 
 
 
-messages = [
-    {
-        "role": "user",
-        "content": "Can you provide ways to eat combinations of bananas and dragonfruits?",
-    }
-]
+prompt = "Hey, are you conscious? Can you talk to me?"
 
 
 pipe = pipeline( 
@@ -40,5 +35,5 @@ generation_args = {
 } 
 
 
-output = pipe(messages, **generation_args) 
+output = pipe(prompt, **generation_args) 
 print(output[0]['generated_text'])

@@ -759,19 +759,6 @@ class PhiMoEBlockSparseTop2MLP(nn.Module):
         current_hidden_states = self.w2(current_hidden_states)
         return current_hidden_states
 
-
-class mp(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx, 
-        scores: torch.Tensor, 
-        multiplier: torch.Tensor, 
-        selected_experts: torch.Tensor,
-        masked_gates: torch.Tensor,
-        mask_for_one: torch.Tensor,
-    ):
-        ctx.save_for_backward(multiplier, selected_experts, masked_gates)
-        return multiplier * mask_for_one
         
     
 def sparsemixer(scores, top_k):
@@ -856,9 +843,6 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
 
-        # Jitter parameters
-        self.router_jitter_noise = config.router_jitter_noise
-        self.input_jitter_noise = config.input_jitter_noise
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
