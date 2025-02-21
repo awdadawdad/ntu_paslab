@@ -21,9 +21,9 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 import torch.utils.checkpoint
 from torch import nn
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
@@ -34,7 +34,6 @@ from transformers.modeling_attn_mask_utils import (
 from transformers.modeling_outputs import (
     MoeCausalLMOutputWithPast,
     MoeModelOutputWithPast,
-    SequenceClassifierOutputWithPast,
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import is_torch_greater_or_equal_than_1_13
@@ -49,9 +48,10 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 from configuration_phimoe import PhiMoEConfig
 
-from einops import rearrange
 from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
-
+from transformers import AutoTokenizer
+import sys
+import os
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -69,9 +69,6 @@ if is_torch_fx_available():
 
 
 logger = logging.get_logger(__name__)
-
-_CONFIG_FOR_DOC = "PhiMoEConfig"
-
 
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
@@ -1275,8 +1272,6 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         
         if not return_dict:
             output = (logits,) + outputs[1:]
-            if output_router_logits:
-                output = (aux_loss,) + output
             return output 
 
         return MoeCausalLMOutputWithPast(
