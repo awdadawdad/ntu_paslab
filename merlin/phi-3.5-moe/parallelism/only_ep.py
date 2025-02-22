@@ -25,6 +25,13 @@ import torch.distributed as dist
 import torch.utils.checkpoint
 from torch import nn
 
+import sys
+import os
+import json
+import time
+from pathlib import Path
+
+
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import (
@@ -50,8 +57,6 @@ from configuration_phimoe import PhiMoEConfig
 
 from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
 from transformers import AutoTokenizer
-import sys
-import os
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -70,6 +75,14 @@ if is_torch_fx_available():
 
 logger = logging.get_logger(__name__)
 
+# Environment variables set by torch.distributed.launch
+LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+WORLD_RANK = int(os.environ["RANK"])
+
+def get_json(file_path: Path) -> dict:
+    with open(file_path, "r") as f:
+        return json.load(f)
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -744,17 +757,14 @@ class PhiMoEBlockSparseTop2MLP(nn.Module):
         super().__init__()
         self.ffn_dim = config.intermediate_size
         self.hidden_dim = config.hidden_size
-
-        self.w1 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
-        self.w2 = nn.Linear(self.ffn_dim, self.hidden_dim, bias=False)
-        self.w3 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
-
         self.act_fn = ACT2FN[config.hidden_act]
+        self.ws: dict[str, torch.Tensor] = ws
 
-    def forward(self, hidden_states):
-        current_hidden_states = self.act_fn(self.w1(hidden_states)) * self.w3(hidden_states)
-        current_hidden_states = self.w2(current_hidden_states)
-        return current_hidden_states
+    def forward(self, hidden_states: torch.Tensor, li: int, ei: int) -> torch.Tensor:
+        w1: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w1"].T  
+        w2: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w2"]       
+        w3: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w3"].T
+        return (self.act_fn(hidden_states @ w1) * (hidden_states @ w3)) @ w2
 
         
     
