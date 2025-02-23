@@ -753,7 +753,7 @@ PHIMOE_ATTENTION_CLASSES = {
 
 
 class PhiMoEBlockSparseTop2MLP(nn.Module):
-    def __init__(self, config: PhiMoEConfig):
+    def __init__(self, config: PhiMoEConfig, ws: dict):
         super().__init__()
         self.ffn_dim = config.intermediate_size
         self.hidden_dim = config.hidden_size
@@ -761,9 +761,9 @@ class PhiMoEBlockSparseTop2MLP(nn.Module):
         self.ws: dict[str, torch.Tensor] = ws
 
     def forward(self, hidden_states: torch.Tensor, li: int, ei: int) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w1"].T  
-        w2: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w2"]       
-        w3: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w3"].T
+        w1: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w1"].T  
+        w2: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w2"]       
+        w3: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w3"].T
         return (self.act_fn(hidden_states @ w1) * (hidden_states @ w3)) @ w2
 
         
@@ -839,7 +839,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, ws):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -851,7 +851,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
 
-        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config, ws) for _ in range(self.num_experts)])
 
         self.router_jitter_noise = config.router_jitter_noise
         
@@ -907,13 +907,13 @@ class PhiMoESparseMoeBlock(nn.Module):
 
 
 class PhiMoEDecoderLayer(nn.Module):
-    def __init__(self, config: PhiMoEConfig, layer_idx: int):
+    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config, ws)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
@@ -1018,14 +1018,14 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         config: PhiMoEConfig
     """
 
-    def __init__(self, config: PhiMoEConfig):
+    def __init__(self, config: PhiMoEConfig, ws):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [PhiMoEDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [PhiMoEDecoderLayer(config, layer_idx, ws) for layer_idx in range(config.num_hidden_layers)]
         )
         self._attn_implementation = config._attn_implementation
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
@@ -1040,7 +1040,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    # Ignore copy
+    
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1183,6 +1183,28 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             attentions=all_self_attns,
             router_logits=all_router_logits,
         )
+    
+    @staticmethod
+    def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
+        model_args = ModelArgs.from_hf_config(get_json(model_path / "config.json"))
+        non_experts = torch.load(
+            model_path / "non-experts.pt",
+            map_location=gpu,
+            weights_only=True,
+            mmap=True,
+        )
+        experts = torch.load(
+            model_path / f"experts-{WORLD_RANK}.pt",
+            map_location=gpu,
+            weights_only=True,
+            mmap=True,
+        )
+
+        with torch.device("meta"):
+            model = PhiMoEModel(model_args, experts=PhiMoEBlockSparseTop2MLP(experts), group=group)
+        model.load_state_dict(non_experts, assign=True, strict=True)
+
+        return model
 
 
 class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
@@ -1374,4 +1396,195 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
 
 
 
+
+@torch.inference_mode()
+def generate(
+    prompts: List[str],
+    tokenizer,      # 假设为 MistralTokenizer 实例
+    model,          # PhiMoEForCausalLM 实例
+    group, 
+    *,
+    max_tokens: int,
+    max_batch_size: int = 64,
+    temperature: float = 0.0,
+    eos_id: Optional[int] = None,
+) -> Tuple[List[int], List[str], int, float, int, float]:
+   
+    model.eval()
+    tic = time.time()
+    # 将每个 prompt 编码为 token 序列
+    encoded_prompts: List[List[int]] = [
+        tokenizer.encode_chat_completion(prompt).tokens for prompt in prompts
+    ]
+    B = len(encoded_prompts)
+    seqlens = [len(x) for x in encoded_prompts]
+    all_tokens = sum(encoded_prompts, [])
+    
+    # 构建缓存：假设 BufferCache 接口符合要求
+    cache_window = max(seqlens) + max_tokens
+    cache = BufferCache(
+        model.config.n_layers,
+        max_batch_size,
+        cache_window,
+        model.config.n_kv_heads,
+        model.config.head_dim,
+    )
+    cache.to(device=model.device, dtype=model.dtype)
+    cache.reset()
+    
+    # Prefill 阶段：对 prompt 进行前向传播计算
+    prelogits = model.forward(
+        torch.tensor(all_tokens, device=model.device, dtype=torch.long),
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+    )[0]
+    last_positions = torch.tensor(seqlens, device=prelogits.device).cumsum(dim=0) - 1
+    last_token_prelogits = prelogits.index_select(0, last_positions)
+    
+    dist.barrier(group=group)
+    prefill_time = time.time() - tic
+    tic = time.time()
+    
+    # Decode 阶段：循环生成 token
+    generated_tensors = []
+    is_finished = torch.zeros(B, dtype=torch.bool, device=model.device)
+    for _ in range(max_tokens):
+        next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
+        is_finished |= (next_token == eos_id)
+        if is_finished.all():
+            break
+        generated_tensors.append(next_token.unsqueeze(1))
+        # 注意：这里简单调用 forward，对于实际应用可能需要利用缓存更新状态
+        last_token_prelogits = model.forward(
+            next_token,
+            attention_mask=None,
+            position_ids=None,
+            past_key_values=cache,
+        )[0]
+    if generated_tensors:
+        generated_tokens = torch.cat(generated_tensors, dim=1).tolist()
+        n_gen_tkns = sum(len(tokens) for tokens in generated_tokens)
+    else:
+        generated_tokens = []
+        n_gen_tkns = 0
+    responses = [tokenizer.decode(tokens) for tokens in generated_tokens]
+    
+    dist.barrier(group=group)
+    decode_time = time.time() - tic
+    
+    return seqlens, responses, sum(seqlens), prefill_time, n_gen_tkns, decode_time
+
+def main(
+    model_path: str,
+    prompt: str,
+    prompt_path: str,
+    n_prompts: int = 1,
+    batch_size: int = 1,
+    max_tokens: int = 128,
+    hide_resp: bool = False,
+):
+    # 构建 prompt 列表
+    if prompt:
+        prompts = [prompt]
+    else:
+        dataset: List[str] = get_json(Path(prompt_path))["prompts"]
+        repeats = -(-n_prompts // len(dataset))  # 向上取整
+        prompts = (dataset * repeats)[:n_prompts]
+    
+    # 分布式初始化
+    gpu = torch.device(f"cuda:{LOCAL_RANK}")
+    dist.init_process_group("nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu)
+    group = dist.new_group(list(range(WORLD_SIZE)), use_local_synchronization=True)
+    
+    # 初始化分词器和模型
+    tokenizer =  AutoTokenizer.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct")
+
+    model = PhiMoEForCausalLM.load(Path(model_path), gpu, group)
+    
+    # Warmup：先用简单 prompt 进行预热
+    generate(
+        ["hello, how are you?"],
+        tokenizer,
+        model,
+        group,
+        max_tokens=16,
+        max_batch_size=1,
+        eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+    )
+    
+    torch.cuda.cudart().cudaProfilerStart()
+    prefill_tps = []
+    decode_tps = []
+    start = 0
+    for end in range(batch_size, n_prompts + 1, batch_size):
+        prompt_batch = prompts[start:end]
+        seqlens, responses, total_prompt_tkns, prefill_time, n_gen_tkns, decode_time = generate(
+            prompt_batch,
+            tokenizer,
+            model,
+            group,
+            max_tokens=max_tokens,
+            max_batch_size=len(prompt_batch),
+            eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+        )
+        if WORLD_RANK == 0:
+            prefill_tp = total_prompt_tkns / prefill_time
+            decode_tp = n_gen_tkns / decode_time if n_gen_tkns > 0 else 0
+            prefill_tps.append(prefill_tp)
+            decode_tps.append(decode_tp)
+            print("=" * 20)
+            print("PERFORMANCE BREAKDOWN")
+            print("PROMPT EVALUATION:")
+            print(f"token count: {total_prompt_tkns}")
+            print(f"total time in sec: {prefill_time:.2f}")
+            print(f"throughput: {prefill_tp:.2f} t/s")
+            print("TOKEN GENERATION:")
+            print(f"token count: {n_gen_tkns}")
+            print(f"total time in sec: {decode_time:.2f}")
+            if n_gen_tkns > 0:
+                print(f"throughput: {decode_tp:.2f} t/s")
+            else:
+                responses = ["" for _ in prompt_batch]
+            if not hide_resp:
+                print("=" * 20)
+                print("INS-N-OUTS")
+                print(f"AVG seqlen: {mean(seqlens)}")
+                print(f"seqlens: {seqlens}")
+                for p, r in zip(prompt_batch, responses):
+                    print(f"PROMPT:\n{p}")
+                    print(f"RESPONSE:\n{r}\n")
+        start = end
+    
+    if WORLD_RANK == 0:
+        print("=" * 20)
+        print("RUN STATISTICS")
+        print(f"avg prefill throughput: {mean(prefill_tps):.2f} t/s")
+        print(f"avg decode throughput: {mean(decode_tps):.2f} t/s")
+    
+    torch.cuda.cudart().cudaProfilerStop()
+    dist.barrier(group=group)
+    dist.destroy_process_group()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-path", type=str, required=True)
+    parser.add_argument("--node-id", type=int, default=0)  # ignored in this example
+    parser.add_argument("--prompt", type=str, default="")
+    parser.add_argument("--prompt-path", type=str, default="")
+    parser.add_argument("--n-prompts", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--hide-resp", action="store_true")
+    args = parser.parse_args()
+
+    main(
+        args.model_path,
+        args.prompt,
+        args.prompt_path,
+        args.n_prompts,
+        args.batch_size,
+        args.max_tokens,
+        args.hide_resp,
+    )
 
