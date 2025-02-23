@@ -17,7 +17,9 @@ model = PhiMoEForCausalLM.from_pretrained(
 
 tokenizer = AutoTokenizer.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct")
 
-prompt = "台湾怎么样"
+prompt =  ["hello", 
+           "hi", 
+           "how is today"]
 
 pipe = pipeline(
     "text-generation",
@@ -27,11 +29,12 @@ pipe = pipeline(
 )
 
 generation_args = {
-    "max_new_tokens": 256,
+    "max_new_tokens": 8,
     "return_full_text": False,
     "temperature": 0.0,
     "do_sample": False,
 }
 
-output = pipe(prompt, **generation_args)
-print(output[0]['generated_text'])
+output = pipe(prompt, batch_size=len(prompt), **generation_args)
+for item in output:
+    print(item)

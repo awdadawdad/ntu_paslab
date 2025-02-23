@@ -839,7 +839,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config, ws):
+    def __init__(self, config, ws: dict, li: int, group):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -854,10 +854,12 @@ class PhiMoESparseMoeBlock(nn.Module):
         self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config, ws) for _ in range(self.num_experts)])
 
         self.router_jitter_noise = config.router_jitter_noise
+
+        self.li = li
+        self.group = group
+
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """ """
-        batch_size, sequence_length, hidden_dim = hidden_states.shape
         
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
@@ -869,16 +871,13 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
-
+        '''
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
 
-        # One hot encode the selected experts to create an expert mask
-        # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
-        # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
@@ -890,30 +889,43 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_x_list = top_x.tolist()
             idx_list = idx.tolist()
 
-            # Index the correct hidden states and compute the expert hidden state for
-            # the current expert. We need to make sure to multiply the output hidden
-            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-            #print(routing_weights[top_x_list, idx_list, None])
-            #print(expert_layer(current_state))
-            current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
 
-            # However `index_add_` only support torch tensors for indexing so we'll use
-            # the `top_x` tensor here.
+            current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
+
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+            
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-        # print ( 'moe', self.iter, torch.norm(final_hidden_states).item())
+
         return final_hidden_states, router_logits
+        '''
+        results = torch.zeros_like(hidden_states)
+
+        selected_experts = selected_experts.to("cpu")
+        eis, bis, nes = [], [], []
+        for ei in range(self.num_experts):
+            batch_idx, nth_expert = torch.where(selected_experts == ei)
+            if torch.numel(batch_idx) > 0:
+                if ei == torch.distributed.get_rank():
+                    eis.append(ei)
+                    bis.append(batch_idx.to(device=hidden_states.device))
+                    nes.append(nth_expert.to(device=hidden_states.device))
+
+        for ei, batch_idx, nth_expert in zip(eis, bis, nes):
+            ey = self.experts.forward(self.li, ei, hidden_states[batch_idx])
+            results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
+        dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
+        return results
 
 
 class PhiMoEDecoderLayer(nn.Module):
-    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws):
+    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws:dict, group):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config, ws)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config, ws, group)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
@@ -1201,7 +1213,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         )
 
         with torch.device("meta"):
-            model = PhiMoEModel(model_args, experts=PhiMoEBlockSparseTop2MLP(experts), group=group)
+            model = PhiMoEModel(model_args, ws=PhiMoEBlockSparseTop2MLP(experts), group=group)
         model.load_state_dict(non_experts, assign=True, strict=True)
 
         return model
@@ -1210,9 +1222,9 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
 class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config):
+    def __init__(self, config, ws):
         super().__init__(config)
-        self.model = PhiMoEModel(config)
+        self.model = PhiMoEModel(config, ws)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=self.config.lm_head_bias)
         self.num_experts = config.num_local_experts
