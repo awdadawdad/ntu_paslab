@@ -135,7 +135,7 @@ def main():
             + f"cd /home/{username}/ntu_paslab/merlin && "
             + f"git pull  origin main && "
             + f"conda activate phi && "
-            + f"python /home/{username}/ntu_paslab/merlin/launch/run_node.py "
+            + f"python /home/{username}/ntu_paslab/merlin/phi-3.5-moe/launch/run_node.py "
         )
 
         if args.terminate:
