@@ -23,10 +23,8 @@ from xformers.ops.fmha.attn_bias import (  # type: ignore
     BlockDiagonalCausalWithOffsetPaddedKeysMask,
 )
 
-from mistral_common.protocol.instruct.messages import UserMessage
-from mistral_common.protocol.instruct.request import ChatCompletionRequest
-
 from transformers import AutoTokenizer
+
 
 # Environment variables set by torch.distributed.launch
 LOCAL_RANK = int(os.environ["LOCAL_RANK"])
@@ -392,9 +390,9 @@ class Experts:
         self.ws: dict[str, torch.Tensor] = ws
 
     def forward(self, li: int, ei: int, x: torch.Tensor) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w1"].T
-        w2: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w2"]
-        w3: torch.Tensor = self.ws[f"layers.{li}.expert{ei}.w3"].T
+        w1: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w1"].T
+        w2: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w2"]
+        w3: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w3"].T
         return (nn.functional.silu(x @ w1) * (x @ w3)) @ w2
 
 
@@ -562,7 +560,7 @@ class Transformer(nn.Module):
 @torch.inference_mode()
 def generate(
     prompts: List[str],
-    tokenizer: MistralTokenizer,
+    tokenizer,
     model: Transformer,
     group,
     *,
@@ -575,10 +573,8 @@ def generate(
     tic = time.time()
 
     encoded_prompts: List[List[int]] = [
-        tokenizer.encode_chat_completion(
-            ChatCompletionRequest(messages=[UserMessage(content=p)])
-        ).tokens
-        for p in prompts
+        tokenizer(prompt, add_special_tokens=True)['input_ids'] for prompt in prompts
+
     ]
     B, V = len(encoded_prompts), model.args.vocab_size
     seqlens = [len(x) for x in encoded_prompts]
@@ -630,7 +626,7 @@ def generate(
         n_gen_tkns = sum(len(y) - 1 for y in generated_tokens)
     else:
         generated_tokens = []
-    responses = [tokenizer.decode(y) for y in generated_tokens]
+    responses = [tokenizer.decode(y, skip_special_tokens=True) for y in generated_tokens]
 
     dist.barrier(group=group)
     decode_time = time.time() - tic
