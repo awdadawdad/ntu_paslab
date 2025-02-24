@@ -115,11 +115,11 @@ def main():
     parser.add_argument("--hide-resp", action="store_true")
     args = parser.parse_args()
 
-    Cmd("""tmux kill-session -t merlin || true""")
+    Cmd("""tmux kill-session -t phi || true""")
     if args.terminate:
         return
 
-    rc, out, err = Cmd("tmux -f /dev/null new-session -s merlin -d bash\;")
+    rc, out, err = Cmd("tmux -f /dev/null new-session -s phi -d bash\;")
 
     if rc != 0:
         print(err, file=sys.stderr)
@@ -154,7 +154,7 @@ def main():
 
     Cmd("tmux set-option -g mouse on")
     Cmd("tmux send-keys -t 0 'clear' Enter \;")
-    Cmd("tmux send-keys -t 0 'conda activate merlin' Enter \;")
+    Cmd("tmux send-keys -t 0 'conda activate phi' Enter \;")
     # Cmd("tmux send-keys -t 0 'export NCCL_DEBUG=INFO' Enter \;")
     Cmd(
         f"tmux send-keys -t 0 '{header}"
