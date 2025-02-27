@@ -17,9 +17,7 @@ model = PhiMoEForCausalLM.from_pretrained(
 
 tokenizer = AutoTokenizer.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct")
 
-prompt =  ["hello", 
-           "hi", 
-           "how is today"]
+prompt =  ["讲讲中国十二生肖是什么"]
 
 pipe = pipeline(
     "text-generation",
@@ -29,12 +27,12 @@ pipe = pipeline(
 )
 
 generation_args = {
-    "max_new_tokens": 8,
+    "max_new_tokens": 1024,
     "return_full_text": False,
     "temperature": 0.0,
     "do_sample": False,
 }
 
-output = pipe(prompt, batch_size=len(prompt), **generation_args)
-for item in output:
-    print(item)
+output = pipe(prompt, **generation_args)
+for result in output:
+    print(result["generated_text"])

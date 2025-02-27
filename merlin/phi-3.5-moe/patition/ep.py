@@ -9,7 +9,7 @@ import glob
 import json
 import logging
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 
 
 class Partitioner:
@@ -51,18 +51,18 @@ class Partitioner:
                 w2: torch.Tensor = ws.pop(f"model.layers.{li}.block_sparse_moe.experts.{experts}.w2.weight")
                 w3: torch.Tensor = ws.pop(f"model.layers.{li}.block_sparse_moe.experts.{experts}.w3.weight")
 
-                expert_dict[f"layers.{li}.experts.{experts}.w1"] = w1
-                expert_dict[f"layers.{li}.experts.{experts}.w2"] = w2
-                expert_dict[f"layers.{li}.experts.{experts}.w3"] = w3
+                expert_dict[f"model.layers.{li}.block_sparse_moe.experts.{experts}.w1.weight"] = w1
+                expert_dict[f"model.layers.{li}.block_sparse_moe.experts.{experts}.w2.weight"] = w2
+                expert_dict[f"model.layers.{li}.block_sparse_moe.experts.{experts}.w3.weight"] = w3
 
         
-            save_file(expert_dict, self.output_path / f"experts-{experts}.safetensors")
+            torch.save(expert_dict, self.output_path / f"experts-{experts}.pt")
         return ws  
 
 
     def partition_non_expert_weights(self, ws: dict) -> None:
         
-        save_file(ws, self.output_path / f"non-experts.safetensors")
+        torch.save(ws, self.output_path / f"non-experts.pt")
 
     def start(self) -> None:
         ws = self.partition_expert_weights(self.load_weights())

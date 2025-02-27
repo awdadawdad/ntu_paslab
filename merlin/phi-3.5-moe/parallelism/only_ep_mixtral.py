@@ -335,10 +335,10 @@ class Attention(nn.Module):
 
         self.scale = self.args.head_dim**-0.5
 
-        self.wq = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=False)
-        self.wk = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
-        self.wo = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=False)
+        self.q_proj = nn.Linear(args.dim, args.n_heads * args.head_dim, bias=False)
+        self.k_proj = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
+        self.v_proj = nn.Linear(args.dim, args.n_kv_heads * args.head_dim, bias=False)
+        self.o_proj = nn.Linear(args.n_heads * args.head_dim, args.dim, bias=False)
 
     def forward(
         self,
@@ -449,7 +449,7 @@ class RMSNorm(torch.nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, args: ModelArgs, li: int, experts: Experts, group):
         super().__init__()
-        self.attention = Attention(args)
+        self.self_attn = Attention(args)
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.feed_forward = MoeLayer(
@@ -477,7 +477,7 @@ class Transformer(nn.Module):
         self._precomputed_freqs_cis: torch.Tensor = None
         self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
         self.norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
+        self.output = nn.Linear(args.dim, args.vocab_size, bias=True)
         self.layers = nn.ModuleDict(
             {
                 str(li): TransformerBlock(

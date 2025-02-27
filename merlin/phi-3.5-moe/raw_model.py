@@ -21,16 +21,9 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-import torch.distributed as dist
 import torch.utils.checkpoint
 from torch import nn
-
-import sys
-import os
-import json
-import time
-from pathlib import Path
-
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
@@ -41,6 +34,7 @@ from transformers.modeling_attn_mask_utils import (
 from transformers.modeling_outputs import (
     MoeCausalLMOutputWithPast,
     MoeModelOutputWithPast,
+    SequenceClassifierOutputWithPast,
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import is_torch_greater_or_equal_than_1_13
@@ -55,8 +49,9 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 from configuration_phimoe import PhiMoEConfig
 
+from einops import rearrange
 from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
-from transformers import AutoTokenizer
+
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -75,14 +70,84 @@ if is_torch_fx_available():
 
 logger = logging.get_logger(__name__)
 
-# Environment variables set by torch.distributed.launch
-LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-WORLD_RANK = int(os.environ["RANK"])
+_CONFIG_FOR_DOC = "PhiMoEConfig"
 
-def get_json(file_path: Path) -> dict:
-    with open(file_path, "r") as f:
-        return json.load(f)
+
+def load_balancing_loss_func(
+    gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2, attention_mask: Optional[torch.Tensor] = None
+) -> float:
+    r"""
+    Computes auxiliary load balancing loss as in Switch Transformer - implemented in Pytorch.
+
+    See Switch Transformer (https://arxiv.org/abs/2101.03961) for more details. This function implements the loss
+    function presented in equations (4) - (6) of the paper. It aims at penalizing cases where the routing between
+    experts is too unbalanced.
+
+    Args:
+        gate_logits (Union[`torch.Tensor`, Tuple[torch.Tensor]):
+            Logits from the `gate`, should be a tuple of model.config.num_hidden_layers tensors of
+            shape [batch_size X sequence_length, num_experts].
+        attention_mask (`torch.Tensor`, None):
+            The attention_mask used in forward function
+            shape [batch_size X sequence_length] if not None.
+        num_experts (`int`, *optional*):
+            Number of experts
+
+    Returns:
+        The auxiliary loss.
+    """
+    if gate_logits is None or not isinstance(gate_logits, tuple):
+        return 0
+
+    if isinstance(gate_logits, tuple):
+        compute_device = gate_logits[0].device
+        concatenated_gate_logits = torch.cat([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
+
+    routing_weights = torch.nn.functional.softmax(concatenated_gate_logits, dim=-1)
+
+    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1)
+
+    expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts)
+
+    if attention_mask is None:
+        # Compute the percentage of tokens routed to each experts
+        tokens_per_expert = torch.mean(expert_mask.float(), dim=0)
+
+        # Compute the average probability of routing to these experts
+        router_prob_per_expert = torch.mean(routing_weights, dim=0)
+    else:
+        batch_size, sequence_length = attention_mask.shape
+        num_hidden_layers = concatenated_gate_logits.shape[0] // (batch_size * sequence_length)
+
+        # Compute the mask that masks all padding tokens as 0 with the same shape of expert_mask
+        expert_attention_mask = (
+            attention_mask[None, :, :, None, None]
+            .expand((num_hidden_layers, batch_size, sequence_length, top_k, num_experts))
+            .reshape(-1, top_k, num_experts)
+            .to(compute_device)
+        )
+
+        # Compute the percentage of tokens routed to each experts
+        tokens_per_expert = torch.sum(expert_mask.float() * expert_attention_mask, dim=0) / torch.sum(
+            expert_attention_mask, dim=0
+        )
+
+        # Compute the mask that masks all padding tokens as 0 with the same shape of tokens_per_expert
+        router_per_expert_attention_mask = (
+            attention_mask[None, :, :, None]
+            .expand((num_hidden_layers, batch_size, sequence_length, num_experts))
+            .reshape(-1, num_experts)
+            .to(compute_device)
+        )
+
+        # Compute the average probability of routing to these experts
+        router_prob_per_expert = torch.sum(routing_weights * router_per_expert_attention_mask, dim=0) / torch.sum(
+            router_per_expert_attention_mask, dim=0
+        )
+
+    overall_loss = torch.sum(tokens_per_expert * router_prob_per_expert.unsqueeze(0))
+    return overall_loss * num_experts
+
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -753,22 +818,69 @@ PHIMOE_ATTENTION_CLASSES = {
 
 
 class PhiMoEBlockSparseTop2MLP(nn.Module):
-    def __init__(self, config: PhiMoEConfig, ws: dict):
+    def __init__(self, config: PhiMoEConfig):
         super().__init__()
         self.ffn_dim = config.intermediate_size
         self.hidden_dim = config.hidden_size
+
+        self.w1 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
+        self.w2 = nn.Linear(self.ffn_dim, self.hidden_dim, bias=False)
+        self.w3 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
+
         self.act_fn = ACT2FN[config.hidden_act]
-        self.ws: dict[str, torch.Tensor] = ws
 
-    def forward(self, hidden_states: torch.Tensor, li: int, ei: int) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w1"].T  
-        w2: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w2"]       
-        w3: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w3"].T
-        return (self.act_fn(hidden_states @ w1) * (hidden_states @ w3)) @ w2
+    def forward(self, hidden_states):
+        current_hidden_states = self.act_fn(self.w1(hidden_states)) * self.w3(hidden_states)
+        current_hidden_states = self.w2(current_hidden_states)
+        return current_hidden_states
 
+
+class PhiMoEBLockSparseTop2MLP(PhiMoEBlockSparseTop2MLP):
+    def __init__(self, *args, **kwargs):
+        logger.warning_once(
+            "PhiMoEBLockSparseTop2MLP is deprecated by PhiMoEBlockSparseTop2MLP and will be removed in v4.40."
+        )
+        super().__init__(*args, **kwargs)
+
+
+class mp(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx, 
+        scores: torch.Tensor, 
+        multiplier: torch.Tensor, 
+        selected_experts: torch.Tensor,
+        masked_gates: torch.Tensor,
+        mask_for_one: torch.Tensor,
+    ):
+        ctx.save_for_backward(multiplier, selected_experts, masked_gates)
+        return multiplier * mask_for_one
         
+    @staticmethod
+    def backward(
+        ctx, 
+        grad_at_output: torch.Tensor, 
+    ):
+        multiplier, selected_experts, masked_gates = ctx.saved_tensors
+        
+        grad_at_output = grad_at_output * multiplier
+        
+        grad_at_scores_expaned = masked_gates * grad_at_output.mul(-1)
+        grad_at_scores_expaned.scatter_add_(
+            dim=-1,
+            index=selected_experts,
+            src=grad_at_output,
+        )
+        
+        return (
+            grad_at_scores_expaned, 
+            None, 
+            None, 
+            None, 
+            None, 
+        )
     
-def sparsemixer(scores, top_k, jitter_eps):
+def sparsemixer(scores, top_k, jitter_eps, training):
     assert top_k == 2
     
     ################ first expert ################
@@ -777,21 +889,42 @@ def sparsemixer(scores, top_k, jitter_eps):
         # compute mask for sparsity
         mask_logits_threshold, max_ind = scores.max(dim=-1, keepdim=True)
         factor = scores.abs().clamp(min=mask_logits_threshold)
-        mask = (
+        mask_logits_threshold = (
             (mask_logits_threshold - scores) / factor
         ) > (2 * jitter_eps)
 
     # apply mask 
-    masked_gates = scores.masked_fill(mask, float('-inf'))
-
-    selected_experts = max_ind 
+    masked_gates = scores.masked_fill(mask_logits_threshold, float('-inf'))
+    if training:
+        selected_experts = (
+            masked_gates - torch.empty_like(masked_gates, memory_format=torch.legacy_contiguous_format).exponential_().log()
+        ).max(dim=-1)[1].unsqueeze(-1) # gumbel sampling, more robust than than the multinomial method
+    else:
+        selected_experts = max_ind
         
     # compute scores for gradients
     masked_gates = torch.softmax(masked_gates, dim=-1)
-    multiplier = masked_gates.gather(dim=-1, index=selected_experts)
-    #print(multiplier)
+    multiplier_o = masked_gates.gather(dim=-1, index=selected_experts)
+    
+    if training:
+        # compute midpoint mask 
+        max_scores, max_ind = masked_gates.max(dim=-1, keepdim=True)
+        mask_for_one = torch.logical_or(
+            selected_experts == max_ind,
+            torch.rand_like(max_scores) > 0.75 # Heun's third-order method: f(x) - f(0) = .25 f'(x) + .75 f'(x/3.)
+        ) 
+        # 1 -> 1.0 & 0 -> 1./3: lambda x: (x + 0.5) / 1.5
+        mask_for_one = torch.add(0.3333, mask_for_one, alpha=0.6667).type_as(masked_gates)
 
-    ################ second expert ################
+        multiplier = mp.apply(
+            scores, 
+            multiplier_o, 
+            selected_experts, 
+            masked_gates, 
+            mask_for_one,
+        )
+    else:
+        multiplier = multiplier_o
 
     # masked out first expert 
     masked_scores = torch.scatter(
@@ -804,22 +937,44 @@ def sparsemixer(scores, top_k, jitter_eps):
         # compute mask for sparsity
         mask_logits_threshold, max_ind = masked_scores.max(dim=-1, keepdim=True)
         factor = scores.abs().clamp(min=mask_logits_threshold)
-        mask = (
+        mask_logits_threshold = (
             (mask_logits_threshold - scores) / factor
         ) > (2 * jitter_eps)
 
     # apply mask 
-    masked_gates_top2 = masked_scores.masked_fill(mask, float('-inf'))
-    
-    selected_experts_top2 = max_ind
+    masked_gates_top2 = masked_scores.masked_fill(mask_logits_threshold, float('-inf'))
+    if training:
+        selected_experts_top2 = (
+            masked_gates_top2 - torch.empty_like(masked_gates_top2, memory_format=torch.legacy_contiguous_format).exponential_().log()
+        ).max(dim=-1)[1].unsqueeze(-1) # gumbel sampling, more robust than than the multinomial method
+    else:
+        selected_experts_top2 = max_ind
     # compute scores for gradients
     masked_gates_top2 = torch.softmax(masked_gates_top2, dim=-1)
-    multiplier_top2 = masked_gates_top2.gather(dim=-1, index=selected_experts_top2)
-    #print(multiplier_top2)
+    multiplier_top2_o = masked_gates_top2.gather(dim=-1, index=selected_experts_top2)
+    
+    if training: 
+        # compute midpoint mask 
+        max_scores, max_ind = masked_gates_top2.max(dim=-1, keepdim=True)
+        mask_for_one_top2 = torch.logical_or(
+            selected_experts_top2 == max_ind,
+            torch.rand_like(max_scores).uniform_() > 0.75 # Heun's third-order method: f(x) - f(0) = .25 f'(x) + .75 f'(x/3.)
+        ) 
+        # 1 -> 1.0 & 0 -> 1./3: lambda x: (x + 0.5) / 1.5
+        mask_for_one_top2 = torch.add(0.3333, mask_for_one_top2, alpha=0.6667).type_as(masked_gates_top2)
+
+        multiplier_top2 = mp.apply(
+            scores, 
+            multiplier_top2_o, 
+            selected_experts_top2, 
+            masked_gates_top2, 
+            mask_for_one_top2,
+        )
+    else:
+        multiplier_top2 = multiplier_top2_o
+    
     multiplier = torch.concat((multiplier, multiplier_top2), dim=-1)
-    #print(multiplier)
     selected_experts = torch.concat((selected_experts, selected_experts_top2), dim=-1)
-    #print(selected_experts)
     
     return (
         multiplier, 
@@ -839,7 +994,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config, ws: dict, li: int, group):
+    def __init__(self, config):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -851,33 +1006,38 @@ class PhiMoESparseMoeBlock(nn.Module):
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
 
-        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config, ws) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
 
+        # Jitter parameters
         self.router_jitter_noise = config.router_jitter_noise
-
-        self.li = li
-        self.group = group
-
+        self.input_jitter_noise = config.input_jitter_noise
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        
-        hidden_states = hidden_states.view(-1, hidden_states)
+        """ """
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        if self.training and self.input_jitter_noise > 0:
+            hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.input_jitter_noise, 1.0 + self.input_jitter_noise)
+        hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
-        
+        # print ( 'moe', self.iter, torch.norm(hidden_states).item())
         router_logits = self.gate(hidden_states)
 
         routing_weights, selected_experts = sparsemixer(
             router_logits, 
-            top_k=2,
-            jitter_eps=self.router_jitter_noise,  
+            top_k=2, 
+            jitter_eps=self.router_jitter_noise, 
+            training=self.training,
         )
-        '''
+
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
 
+        # One hot encode the selected experts to create an expert mask
+        # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
+        # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
@@ -889,43 +1049,28 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_x_list = top_x.tolist()
             idx_list = idx.tolist()
 
+            # Index the correct hidden states and compute the expert hidden state for
+            # the current expert. We need to make sure to multiply the output hidden
+            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
 
-            current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
-
+            # However `index_add_` only support torch tensors for indexing so we'll use
+            # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-            
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-
+        # print ( 'moe', self.iter, torch.norm(final_hidden_states).item())
         return final_hidden_states, router_logits
-        '''
-        results = torch.zeros_like(hidden_states)
-
-        selected_experts = selected_experts.to("cpu")
-        eis, bis, nes = [], [], []
-        for ei in range(self.num_experts):
-            batch_idx, nth_expert = torch.where(selected_experts == ei)
-            if torch.numel(batch_idx) > 0:
-                if ei == torch.distributed.get_rank():
-                    eis.append(ei)
-                    bis.append(batch_idx.to(device=hidden_states.device))
-                    nes.append(nth_expert.to(device=hidden_states.device))
-
-        for ei, batch_idx, nth_expert in zip(eis, bis, nes):
-            ey = self.experts.forward(self.li, ei, hidden_states[batch_idx])
-            results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
-        dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
-        return results
 
 
 class PhiMoEDecoderLayer(nn.Module):
-    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws:dict, group):
+    def __init__(self, config: PhiMoEConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config, ws, layer_idx, group)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
@@ -996,6 +1141,27 @@ class PhiMoEDecoderLayer(nn.Module):
         return outputs
 
 
+PHIMOE_START_DOCSTRING = r"""
+    This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
+    library implements for all its model (such as downloading or saving, resizing the input embeddings, pruning heads
+    etc.)
+
+    This model is also a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) subclass.
+    Use it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage
+    and behavior.
+
+    Parameters:
+        config ([`PhiMoEConfig`]):
+            Model configuration class with all the parameters of the model. Initializing with a config file does not
+            load the weights associated with the model, only the configuration. Check out the
+            [`~PreTrainedModel.from_pretrained`] method to load the model weights.
+"""
+
+
+@add_start_docstrings(
+    "The bare PhiMoE Model outputting raw hidden-states without any specific head on top.",
+    PHIMOE_START_DOCSTRING,
+)
 
 class PhiMoEPreTrainedModel(PreTrainedModel):
     config_class = PhiMoEConfig
@@ -1020,7 +1186,77 @@ class PhiMoEPreTrainedModel(PreTrainedModel):
         #         module.weight.data[module.padding_idx].zero_()
 
 
+PHIMOE_INPUTS_DOCSTRING = r"""
+    Args:
+        input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+            Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
+            it.
 
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            [`PreTrainedTokenizer.__call__`] for details.
+
+            [What are input IDs?](../glossary#input-ids)
+        attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+            - 1 for tokens that are **not masked**,
+            - 0 for tokens that are **masked**.
+
+            [What are attention masks?](../glossary#attention-mask)
+
+            Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
+            [`PreTrainedTokenizer.__call__`] for details.
+
+            If `past_key_values` is used, optionally only the last `decoder_input_ids` have to be input (see
+            `past_key_values`).
+
+            If you want to change padding behavior, you should read [`modeling_opt._prepare_decoder_attention_mask`]
+            and modify to your needs. See diagram 1 in [the paper](https://arxiv.org/abs/1910.13461) for more
+            information on the default strategy.
+
+            - 1 indicates the head is **not masked**,
+            - 0 indicates the head is **masked**.
+        position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+            config.n_positions - 1]`.
+
+            [What are position IDs?](../glossary#position-ids)
+        past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+            Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+            `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
+            `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`.
+
+            Contains pre-computed hidden-states (key and values in the self-attention blocks and in the cross-attention
+            blocks) that can be used (see `past_key_values` input) to speed up sequential decoding.
+
+            If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
+            don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
+            `decoder_input_ids` of shape `(batch_size, sequence_length)`.
+        inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
+            is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
+            model's internal embedding lookup matrix.
+        use_cache (`bool`, *optional*):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
+            `past_key_values`).
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned
+            tensors for more detail.
+        output_hidden_states (`bool`, *optional*):
+            Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
+            more detail.
+        output_router_logits (`bool`, *optional*):
+            Whether or not to return the logits of all the routers. They are useful for computing the router loss, and
+            should not be returned during inference.
+        return_dict (`bool`, *optional*):
+            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+"""
+
+
+@add_start_docstrings(
+    "The bare PhiMoE Model outputting raw hidden-states without any specific head on top.",
+    PHIMOE_START_DOCSTRING,
+)
 
 class PhiMoEModel(PhiMoEPreTrainedModel):
     """
@@ -1030,14 +1266,14 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         config: PhiMoEConfig
     """
 
-    def __init__(self, config: PhiMoEConfig, ws, group):
+    def __init__(self, config: PhiMoEConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [PhiMoEDecoderLayer(config, layer_idx, ws, group) for layer_idx in range(config.num_hidden_layers)]
+            [PhiMoEDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self._attn_implementation = config._attn_implementation
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
@@ -1052,7 +1288,8 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    
+    # Ignore copy
+    @add_start_docstrings_to_model_forward(PHIMOE_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1088,7 +1325,14 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
         past_key_values_length = 0
-        
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`transformers."
+                )
+                use_cache = False
+
         if use_cache:
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
@@ -1150,16 +1394,27 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            
-            layer_outputs = decoder_layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                output_router_logits=output_router_logits,
-                use_cache=use_cache,
-            )
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    output_router_logits,
+                    use_cache,
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    output_router_logits=output_router_logits,
+                    use_cache=use_cache,
+                )
 
             hidden_states = layer_outputs[0]
 
@@ -1195,38 +1450,17 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             attentions=all_self_attns,
             router_logits=all_router_logits,
         )
-    
-    @staticmethod
-    def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
-        config = PhiMoEConfig()
-        non_experts = torch.load(
-            model_path / "non-experts.pt",
-            map_location=gpu,
-            weights_only=True,
-            mmap=True,
-        )
-        experts = torch.load(
-            model_path / f"experts-{WORLD_RANK}.pt",
-            map_location=gpu,
-            weights_only=True,
-            mmap=True,
-        )
-
-        with torch.device("meta"):
-            model = PhiMoEModel(config, ws=PhiMoEBlockSparseTop2MLP(experts), group=group)
-        model.load_state_dict(non_experts, assign=True, strict=True)
-
-        return model
 
 
 class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, ws):
+    def __init__(self, config):
         super().__init__(config)
-        self.model = PhiMoEModel(config, ws)
+        self.model = PhiMoEModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=self.config.lm_head_bias)
+        self.router_aux_loss_coef = config.router_aux_loss_coef
         self.num_experts = config.num_local_experts
         self.num_experts_per_tok = config.num_experts_per_tok
         # Initialize weights and apply final processing
@@ -1250,8 +1484,9 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     def get_decoder(self):
         return self.model
 
-
-    
+    @add_start_docstrings_to_model_forward(PHIMOE_INPUTS_DOCSTRING)
+    @replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
+    # Ignore copy
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1267,6 +1502,13 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
         r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, transformers.,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, transformers., config.vocab_size]`.
+
+        Returns:
 
         Example:
 
@@ -1313,12 +1555,39 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         logits = self.lm_head(hidden_states)
         logits = logits.float()
 
-        
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
+
+        aux_loss = None
+        if output_router_logits:
+            aux_loss = load_balancing_loss_func(
+                outputs.router_logits if return_dict else outputs[-1],
+                self.num_experts,
+                self.num_experts_per_tok,
+                attention_mask,
+            )
+            if labels is not None:
+                loss += self.router_aux_loss_coef * aux_loss.to(loss.device)  # make sure to reside in the same device
+
         if not return_dict:
             output = (logits,) + outputs[1:]
-            return output 
+            if output_router_logits:
+                output = (aux_loss,) + output
+            return (loss,) + output if loss is not None else output
 
         return MoeCausalLMOutputWithPast(
+            loss=loss,
+            aux_loss=aux_loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
@@ -1407,139 +1676,125 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         return reordered_past
 
 
+@add_start_docstrings(
+    """
+    The PhiMoE Model transformer with a sequence classification head on top (linear layer).
 
-'''
-@torch.inference_mode()
-def generate(
-    prompts: List[str],
-    tokenizer,      
-    model:PhiMoEForCausalLM ,         
-    group, 
-    *,
-    max_tokens: int,
-    max_batch_size: int = 64,
-    temperature: float = 0.0,
-    eos_id: Optional[int] = None,
-) -> Tuple[List[int], List[str], int, float, int, float]:
-   
-    model.eval()
-    tic = time.time()
-    
-    encoded_prompts: List[List[int]] = [
-        tokenizer(prompt, add_special_tokens=True)['input_ids'] for prompt in prompts
+    [`PhiMoEForSequenceClassification`] uses the last token in order to do the classification, as other causal models
+    (e.g. GPT-2) do.
 
-    ]
-    B = len(encoded_prompts)
-    seqlens = [len(x) for x in encoded_prompts]
-    all_tokens = sum(encoded_prompts, [])
-    
-    # 构建缓存：假设 BufferCache 接口符合要求
-    cache_window = max(seqlens) + max_tokens
-    cache = BufferCache(
-        model.config.n_layers,
-        max_batch_size,
-        cache_window,
-        model.config.n_kv_heads,
-        model.config.head_dim,
-    )
-    cache.to(device=model.device, dtype=model.dtype)
-    cache.reset()
-    
-    # Prefill 阶段：对 prompt 进行前向传播计算
-    prelogits = model.forward(
-        torch.tensor(all_tokens, device=model.device, dtype=torch.long),
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-    )[0]
-    last_positions = torch.tensor(seqlens, device=prelogits.device).cumsum(dim=0) - 1
-    last_token_prelogits = prelogits.index_select(0, last_positions)
-    
-    dist.barrier(group=group)
-    prefill_time = time.time() - tic
-    tic = time.time()
-    
-    # Decode 阶段：循环生成 token
-    generated_tensors = []
-    is_finished = torch.zeros(B, dtype=torch.bool, device=model.device)
-    for _ in range(max_tokens):
-        next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
-        is_finished |= (next_token == eos_id)
-        if is_finished.all():
-            break
-        generated_tensors.append(next_token.unsqueeze(1))
-        # 注意：这里简单调用 forward，对于实际应用可能需要利用缓存更新状态
-        last_token_prelogits = model.forward(
-            next_token,
-            attention_mask=None,
-            position_ids=None,
-            past_key_values=cache,
-        )[0]
-    if generated_tensors:
-        generated_tokens = torch.cat(generated_tensors, dim=1).tolist()
-        n_gen_tkns = sum(len(tokens) for tokens in generated_tokens)
-    else:
-        generated_tokens = []
-        n_gen_tkns = 0
-    responses = [tokenizer.decode(tokens) for tokens in generated_tokens]
-    
-    dist.barrier(group=group)
-    decode_time = time.time() - tic
-    
-    return seqlens, responses, sum(seqlens), prefill_time, n_gen_tkns, decode_time
-'''
-def main(
-    model_path: str,
-    prompt: str,
-    prompt_path: str,
-    n_prompts: int = 1,
-    batch_size: int = 1,
-    max_tokens: int = 128,
-    hide_resp: bool = False,
-    ):  
-    
-    
-    gpu = torch.device(f"cuda:{LOCAL_RANK}")
-    dist.init_process_group("nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu)
-    group = dist.new_group(list(range(WORLD_SIZE)), use_local_synchronization=True)
-    
-    
-    tokenizer =  AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
+    Since it does classification on the last token, it requires to know the position of the last token. If a
+    `pad_token_id` is defined in the configuration, it finds the last token that is not a padding token in each row. If
+    no `pad_token_id` is defined, it simply takes the last value in each row of the batch. Since it cannot guess the
+    padding tokens when `inputs_embeds` are passed instead of `input_ids`, it does the same (take the last value in
+    each row of the batch).
+    """,
+    PHIMOE_START_DOCSTRING,
+)
+# Copied from transformers.models.llama.modeling_llama.LlamaForSequenceClassification with Llama->PhiMoE, LLAMA->PHIMOE
+class PhiMoEForSequenceClassification(PhiMoEPreTrainedModel):
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.model = PhiMoEModel(config)
+        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
 
-    model = PhiMoEForCausalLM.load(Path(model_path), gpu, group)
-    
-    prompt = "Hey, are you conscious? Can you talk to me?"
-    inputs = tokenizer(prompt, return_tensors="pt")
+        # Initialize weights and apply final processing
+        self.post_init()
 
-    
-    generate_ids = model.generate(inputs.input_ids, max_length=128)
-    tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    
-    if WORLD_RANK == 0:
-        print(tokenizer.batch_decode)
-        
-    dist.barrier(group=group)
-    dist.destroy_process_group()
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--node-id", type=int, default=0)  # ignored in this example
-    parser.add_argument("--prompt", type=str, default="")
-    #parser.add_argument("--prompt-path", type=str, default="")
-    parser.add_argument("--n-prompts", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--max-tokens", type=int, default=128)
-    parser.add_argument("--hide-resp", action="store_true")
-    args = parser.parse_args()
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
 
-    main(
-        args.model_path,
-        args.prompt,
-        args.prompt_path,
-        args.n_prompts,
-        args.batch_size,
-        args.max_tokens,
-        args.hide_resp,
-    )
+    @add_start_docstrings_to_model_forward(PHIMOE_INPUTS_DOCSTRING)
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[0, transformers.,
+            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
+            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        transformer_outputs = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        hidden_states = transformer_outputs[0]
+        logits = self.score(hidden_states)
+
+        if input_ids is not None:
+            batch_size = input_ids.shape[0]
+        else:
+            batch_size = inputs_embeds.shape[0]
+
+        if self.config.pad_token_id is None and batch_size != 1:
+            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
+        if self.config.pad_token_id is None:
+            sequence_lengths = -1
+        else:
+            if input_ids is not None:
+                # if no pad token found, use modulo instead of reverse indexing for ONNX compatibility
+                sequence_lengths = torch.eq(input_ids, self.config.pad_token_id).int().argmax(-1) - 1
+                sequence_lengths = sequence_lengths % input_ids.shape[-1]
+                sequence_lengths = sequence_lengths.to(logits.device)
+            else:
+                sequence_lengths = -1
+
+        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
+
+        loss = None
+        if labels is not None:
+            labels = labels.to(logits.device)
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(pooled_logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(pooled_logits, labels)
+        if not return_dict:
+            output = (pooled_logits,) + transformer_outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+
+        return SequenceClassifierOutputWithPast(
+            loss=loss,
+            logits=pooled_logits,
+            past_key_values=transformer_outputs.past_key_values,
+            hidden_states=transformer_outputs.hidden_states,
+            attentions=transformer_outputs.attentions,
+        )

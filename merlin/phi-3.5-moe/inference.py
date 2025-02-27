@@ -34,7 +34,6 @@ from transformers.modeling_attn_mask_utils import (
 from transformers.modeling_outputs import (
     MoeCausalLMOutputWithPast,
     MoeModelOutputWithPast,
-    SequenceClassifierOutputWithPast,
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import is_torch_greater_or_equal_than_1_13
@@ -862,8 +861,7 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
-        print(routing_weights)
-        print(selected_experts)
+        
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -871,7 +869,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
+        #print(expert_mask)
         # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
@@ -911,7 +909,7 @@ class PhiMoEDecoderLayer(nn.Module):
         self.block_sparse_moe = PhiMoESparseMoeBlock(config)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
-
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1017,17 +1015,19 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-
+        
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+       
         self.layers = nn.ModuleList(
             [PhiMoEDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+        
         self._attn_implementation = config._attn_implementation
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
-        self.post_init()
+        #self.post_init()
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1186,12 +1186,14 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.model = PhiMoEModel(config)
+       
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=self.config.lm_head_bias)
         self.num_experts = config.num_local_experts
         self.num_experts_per_tok = config.num_experts_per_tok
+        
         # Initialize weights and apply final processing
-        self.post_init()
+        #self.post_init()
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -1277,8 +1279,6 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         
         if not return_dict:
             output = (logits,) + outputs[1:]
-            if output_router_logits:
-                output = (aux_loss,) + output
             return output 
 
         return MoeCausalLMOutputWithPast(
