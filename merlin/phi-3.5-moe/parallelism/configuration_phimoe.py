@@ -145,8 +145,8 @@ class PhiMoEConfig(PretrainedConfig):
         router_aux_loss_coef=0.001,
         router_jitter_noise=0.01,
         input_jitter_noise=0.0,
-        attention_bias = True, # !!!!!!!!!!!!!!!!!!!!!! joe told u !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        lm_head_bias = True,   # !!!!!!!!!!!!!!!!!!!!!! joe told u !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        attention_bias = False, # !!!!!!!!!!!!!!!!!!!!!! joe told u !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        lm_head_bias = False,   # !!!!!!!!!!!!!!!!!!!!!! joe told u !!!!!!!!!!!!!!!!!!!!!!!!!!!!
         **kwargs,
     ):
         self.vocab_size = vocab_size
