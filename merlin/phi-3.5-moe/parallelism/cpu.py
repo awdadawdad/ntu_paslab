@@ -1406,41 +1406,35 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     '''
     @staticmethod
     def load(model_path: Path, gpu: torch.device) -> "PhiMoEModel":
-        all_weight = {}
-        non_experts = load_file(model_path / "non-experts.safetensors")
-        experts_weights = {}
-        all_weight.update(non_experts)
-        for i in range(5):
-            weight = load_file( model_path / f"experts-{i}.safetensors")
-
-            experts_weights.update(weight)
-        all_weight.update(experts_weights)
-        config = PretrainedConfig.from_pretrained ("microsoft/Phi-3.5-moe-instruct")
-        model = PhiMoEForCausalLM.from_pretrained(
-            pretrained_model_name_or_path = None, 
-            config=config,
-            state_dict=all_weight,
-            torch_dtype="auto",
-            device_map=gpu
-        )
+        configuration = PhiMoEConfig()
+        model = PhiMoEForCausalLM(configuration)
+        weight = torch.load(model_path,
+                            map_location=gpu,
+                            weights_only=True,
+                            mmap=True,)
+        model.load_state_dict(weight,
+                              strict=False,
+                              assign=True)
   
         return model
 
 def main(model_path: str):  
+
     torch.random.manual_seed(0)
     gpu = torch.device("cpu")
-    
+    torch.set_default_dtype(torch.bfloat16)
+
     model = PhiMoEForCausalLM.load(Path(model_path), gpu)
     model.eval()
 
     tokenizer =  AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
     
-    prompt = "how are you"
+    prompt = "Do you know why turkeys became the official food of thanksgiving?"
     inputs = tokenizer(prompt, return_tensors="pt")
 
     
-    generate_ids = model.generate(inputs.input_ids, max_length = 128)
-    print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0])
+    generate_ids = model.generate(inputs.input_ids, max_length = 512)
+    print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)[0])
     
 
 if __name__ == "__main__":

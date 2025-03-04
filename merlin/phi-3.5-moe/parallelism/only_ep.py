@@ -18,19 +18,19 @@ import inspect
 import math
 import warnings
 from typing import List, Optional, Tuple, Union
+import argparse
 
 import torch
 import torch.nn.functional as F
-import torch.distributed as dist
 import torch.utils.checkpoint
 from torch import nn
+import torch.distributed as dist
 
 import sys
 import os
 import json
 import time
 from pathlib import Path
-
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
@@ -79,6 +79,8 @@ logger = logging.get_logger(__name__)
 LOCAL_RANK = int(os.environ["LOCAL_RANK"])
 WORLD_SIZE = int(os.environ["WORLD_SIZE"])
 WORLD_RANK = int(os.environ["RANK"])
+
+
 
 def get_json(file_path: Path) -> dict:
     with open(file_path, "r") as f:
@@ -761,11 +763,10 @@ class PhiMoEBlockSparseTop2MLP(nn.Module):
         self.ws: dict[str, torch.Tensor] = ws
 
     def forward(self, hidden_states: torch.Tensor, li: int, ei: int) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w1"].T  
-        w2: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w2"]       
-        w3: torch.Tensor = self.ws[f"layers.{li}.experts{ei}.w3"].T
+        w1: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w1"].T
+        w2: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w2"].T       
+        w3: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w3"].T
         return (self.act_fn(hidden_states @ w1) * (hidden_states @ w3)) @ w2
-
         
     
 def sparsemixer(scores, top_k, jitter_eps):
@@ -839,7 +840,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config, ws: dict, li: int, group):
+    def __init__(self, config,  li: int, ws, group):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -851,17 +852,20 @@ class PhiMoESparseMoeBlock(nn.Module):
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
 
-        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config, ws) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config,ws) for _ in range(self.num_experts)])
 
         self.router_jitter_noise = config.router_jitter_noise
 
         self.li = li
+
         self.group = group
+        
 
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         
-        hidden_states = hidden_states.view(-1, hidden_states)
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         
         router_logits = self.gate(hidden_states)
@@ -891,7 +895,7 @@ class PhiMoESparseMoeBlock(nn.Module):
 
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
 
-            current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
 
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
             
@@ -901,31 +905,31 @@ class PhiMoESparseMoeBlock(nn.Module):
         '''
         results = torch.zeros_like(hidden_states)
 
-        selected_experts = selected_experts.to("cpu")
         eis, bis, nes = [], [], []
         for ei in range(self.num_experts):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
             if torch.numel(batch_idx) > 0:
-                if ei == torch.distributed.get_rank():
+                if ei == WORLD_RANK:
                     eis.append(ei)
                     bis.append(batch_idx.to(device=hidden_states.device))
                     nes.append(nth_expert.to(device=hidden_states.device))
 
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
-            ey = self.experts.forward(self.li, ei, hidden_states[batch_idx])
+            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
         return results
+        
 
 
 class PhiMoEDecoderLayer(nn.Module):
-    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws:dict, group):
+    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws, group):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config, ws, layer_idx, group)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config, layer_idx, ws, group)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
@@ -979,7 +983,7 @@ class PhiMoEDecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, router_logits = self.block_sparse_moe(hidden_states)
+        hidden_states = self.block_sparse_moe(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -990,8 +994,6 @@ class PhiMoEDecoderLayer(nn.Module):
         if use_cache:
             outputs += (present_key_value,)
 
-        if output_router_logits:
-            outputs += (router_logits,)
 
         return outputs
 
@@ -1196,35 +1198,14 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             router_logits=all_router_logits,
         )
     
-    @staticmethod
-    def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
-        config = PhiMoEConfig()
-        non_experts = torch.load(
-            model_path / "non-experts.pt",
-            map_location=gpu,
-            weights_only=True,
-            mmap=True,
-        )
-        experts = torch.load(
-            model_path / f"experts-{WORLD_RANK}.pt",
-            map_location=gpu,
-            weights_only=True,
-            mmap=True,
-        )
-
-        with torch.device("meta"):
-            model = PhiMoEModel(config, ws=PhiMoEBlockSparseTop2MLP(experts), group=group)
-        model.load_state_dict(non_experts, assign=True, strict=True)
-
-        return model
 
 
 class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, ws):
+    def __init__(self, config, ws, group):
         super().__init__(config)
-        self.model = PhiMoEModel(config, ws)
+        self.model = PhiMoEModel(config, ws, group)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=self.config.lm_head_bias)
         self.num_experts = config.num_local_experts
@@ -1406,127 +1387,92 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
             )
         return reordered_past
 
+    @staticmethod
+    def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
+        configuration = PhiMoEConfig.from_pretrained("microsoft/Phi-3.5-MoE-instruct")
+        
+        non_experts = torch.load(model_path / "non-experts.pt")
+        non_experts = torch.load(
+            model_path / "non-experts.pt",
+            map_location=gpu,
+            weights_only=True,
+            mmap=True,
+        )
+        experts_weights ={}
+        
+        for i in range (WORLD_RANK , WORLD_RANK + (configuration.self.num_local_experts // WORLD_SIZE)):
+            experts = torch.load(
+                model_path / f"experts-{i}.pt",
+                map_location=gpu,
+                weights_only=True,
+                mmap=True,
+            )
+            experts_weights.update(experts)
+        
+        
+        
+        model = PhiMoEForCausalLM(configuration, experts_weights, group)
+        model.load_state_dict(non_experts,  assign=True, strict=True)
+        
+  
+        return model
 
-
-'''
-@torch.inference_mode()
-def generate(
-    prompts: List[str],
-    tokenizer,      
-    model:PhiMoEForCausalLM ,         
-    group, 
-    *,
-    max_tokens: int,
-    max_batch_size: int = 64,
-    temperature: float = 0.0,
-    eos_id: Optional[int] = None,
-) -> Tuple[List[int], List[str], int, float, int, float]:
-   
-    model.eval()
-    tic = time.time()
+def main(model_path: str,
+            prompt: str,
+            prompt_path: str,
+            n_prompts: int = 1,
+            batch_size: int = 1,
+            max_tokens: int = 128,
+            hide_resp: bool = False,
+            ):  
     
-    encoded_prompts: List[List[int]] = [
-        tokenizer(prompt, add_special_tokens=True)['input_ids'] for prompt in prompts
-
-    ]
-    B = len(encoded_prompts)
-    seqlens = [len(x) for x in encoded_prompts]
-    all_tokens = sum(encoded_prompts, [])
-    
-    # 构建缓存：假设 BufferCache 接口符合要求
-    cache_window = max(seqlens) + max_tokens
-    cache = BufferCache(
-        model.config.n_layers,
-        max_batch_size,
-        cache_window,
-        model.config.n_kv_heads,
-        model.config.head_dim,
-    )
-    cache.to(device=model.device, dtype=model.dtype)
-    cache.reset()
-    
-    # Prefill 阶段：对 prompt 进行前向传播计算
-    prelogits = model.forward(
-        torch.tensor(all_tokens, device=model.device, dtype=torch.long),
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-    )[0]
-    last_positions = torch.tensor(seqlens, device=prelogits.device).cumsum(dim=0) - 1
-    last_token_prelogits = prelogits.index_select(0, last_positions)
-    
-    dist.barrier(group=group)
-    prefill_time = time.time() - tic
-    tic = time.time()
-    
-    # Decode 阶段：循环生成 token
-    generated_tensors = []
-    is_finished = torch.zeros(B, dtype=torch.bool, device=model.device)
-    for _ in range(max_tokens):
-        next_token = sample(last_token_prelogits, temperature=temperature, top_p=0.8)
-        is_finished |= (next_token == eos_id)
-        if is_finished.all():
-            break
-        generated_tensors.append(next_token.unsqueeze(1))
-        # 注意：这里简单调用 forward，对于实际应用可能需要利用缓存更新状态
-        last_token_prelogits = model.forward(
-            next_token,
-            attention_mask=None,
-            position_ids=None,
-            past_key_values=cache,
-        )[0]
-    if generated_tensors:
-        generated_tokens = torch.cat(generated_tensors, dim=1).tolist()
-        n_gen_tkns = sum(len(tokens) for tokens in generated_tokens)
+    assert prompt or (prompt_path and n_prompts and n_prompts > 0)
+    assert n_prompts % batch_size == 0
+    prompts: list[str] = None
+    if prompt:
+        prompts = [prompt]
     else:
-        generated_tokens = []
-        n_gen_tkns = 0
-    responses = [tokenizer.decode(tokens) for tokens in generated_tokens]
-    
-    dist.barrier(group=group)
-    decode_time = time.time() - tic
-    
-    return seqlens, responses, sum(seqlens), prefill_time, n_gen_tkns, decode_time
-'''
-def main(
-    model_path: str,
-    prompt: str,
-    prompt_path: str,
-    n_prompts: int = 1,
-    batch_size: int = 1,
-    max_tokens: int = 128,
-    hide_resp: bool = False,
-    ):  
-    
+        dataset: list[str] = get_json(Path(prompt_path))["prompts"]
+        n_repeats = -(n_prompts // -len(dataset))  # ceil division
+        prompts = (dataset * n_repeats)[:n_prompts]
     
     gpu = torch.device(f"cuda:{LOCAL_RANK}")
-    dist.init_process_group("nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu)
+
+    dist.init_process_group(
+        "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu
+    )
     group = dist.new_group(list(range(WORLD_SIZE)), use_local_synchronization=True)
-    
-    
+
     tokenizer =  AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
 
+    torch.set_default_dtype(torch.bfloat16)
+
     model = PhiMoEForCausalLM.load(Path(model_path), gpu, group)
+    model.eval()
+
+    torch.cuda.cudart().cudaProfilerStart()
     
-    prompt = "Hey, are you conscious? Can you talk to me?"
+    #prompt = "what do i do if i stepped in dog poo?"
     inputs = tokenizer(prompt, return_tensors="pt")
 
     
-    generate_ids = model.generate(inputs.input_ids, max_length=128)
-    tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    
+    generate_ids = model.generate(inputs.input_ids, max_tokens)
+
     if WORLD_RANK == 0:
-        print(tokenizer.batch_decode)
-        
+        print("=" * 20)    
+        print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0])
+    
+    torch.cuda.cudart().cudaProfilerStop()
     dist.barrier(group=group)
     dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--node-id", type=int, default=0)  # ignored in this example
-    parser.add_argument("--prompt", type=str, default="")
-    #parser.add_argument("--prompt-path", type=str, default="")
+    parser.add_argument("--node-id", type=int) # ignored
+    parser.add_argument("--prompt", type=str)
+    parser.add_argument("--prompt-path", type=str)
     parser.add_argument("--n-prompts", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-tokens", type=int, default=128)
@@ -1536,10 +1482,10 @@ if __name__ == "__main__":
     main(
         args.model_path,
         args.prompt,
-        args.prompt_path,
-        args.n_prompts,
-        args.batch_size,
+        #args.prompt_path,
+        #args.n_prompts,
+        #args.batch_size,
         args.max_tokens,
-        args.hide_resp,
+        #args.hide_resp,
     )
 

@@ -7,13 +7,13 @@ from inference import PhiMoEForCausalLM
 model = PhiMoEForCausalLM.from_pretrained(
     "/mnt/disk2/llm_team/Phi-3.5-MoE-instruct",
     device_map="auto",
-    torch_dtype="float32",
+    torch_dtype="auto",
     trust_remote_code=False,  
 )
 
 tokenizer = AutoTokenizer.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct")
 
-prompt =  ["给我讲讲中国十二生肖好吗？"]
+prompt =  ["给我讲讲中国十二生肖是怎么回事。"]
 
 pipe = pipeline(
     "text-generation",
@@ -23,7 +23,7 @@ pipe = pipeline(
 )
 
 generation_args = {
-    "max_new_tokens": 1024,
+    "max_new_tokens": 512,
     "return_full_text": False,
     "temperature": 0.0,
     "do_sample": False,

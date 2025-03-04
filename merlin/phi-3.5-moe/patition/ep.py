@@ -9,7 +9,7 @@ import glob
 import json
 import logging
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file
 
 
 class Partitioner:
@@ -32,11 +32,12 @@ class Partitioner:
         return model_config
 
     def load_weights(self) -> dict:
-        weight_files = glob.glob(str(self.model_path / "model-*-of-00017.safetensors"))
-        weights = {}
-        for wf in weight_files:
-            weights.update(load_file(wf))    
-        return weights
+        weight = torch.load(self.model_path/"model.pt",
+                            
+                            weights_only=True,
+                            mmap=True,)
+          
+        return weight
 
     def partition_expert_weights(self, ws: dict) -> dict:
         num_layers = self.model_config["num_hidden_layers"]
@@ -54,13 +55,13 @@ class Partitioner:
                 expert_dict[f"layers.{li}.experts.{experts}.w3"] = w3
 
         
-            save_file(expert_dict, self.output_path / f"experts-{experts}.safetensors")
+            torch.save(expert_dict, self.output_path / f"experts-{experts}.pt")
         return ws  
 
 
     def partition_non_expert_weights(self, ws: dict) -> None:
         
-        save_file(ws, self.output_path / f"non-experts.safetensors")
+        torch.save(ws, self.output_path / f"non-experts.pt")
 
     def start(self) -> None:
         ws = self.partition_expert_weights(self.load_weights())

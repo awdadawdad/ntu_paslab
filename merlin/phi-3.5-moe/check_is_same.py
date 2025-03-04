@@ -1,3 +1,8 @@
+import torch
+from modeling_phimoe import PhiMoEForCausalLM
+from safetensors.torch import load_file, save_file
+from pathlib import Path
+
 # coding=utf-8
 # Copyright 2024 Microsoft and the HuggingFace Inc. team. All rights reserved.
 #
@@ -19,18 +24,13 @@ import math
 import warnings
 from typing import List, Optional, Tuple, Union
 import argparse
-
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
-
-import sys
-import os
-import json
-import time
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from transformers import AutoTokenizer, AutoConfig, PretrainedConfig
 from pathlib import Path
-
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import (
@@ -54,8 +54,9 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 from configuration_phimoe import PhiMoEConfig
 
+from einops import rearrange
 from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
-from transformers import AutoTokenizer
+from safetensors.torch import load_file
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -74,9 +75,9 @@ if is_torch_fx_available():
 
 logger = logging.get_logger(__name__)
 
-def get_json(file_path: Path) -> dict:
-    with open(file_path, "r") as f:
-        return json.load(f)
+_CONFIG_FOR_DOC = "PhiMoEConfig"
+
+
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -349,7 +350,7 @@ class PhiMoEAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
         attn_output = self.o_proj(attn_output)
-
+        
         if not output_attentions:
             attn_weights = None
 
@@ -747,18 +748,22 @@ PHIMOE_ATTENTION_CLASSES = {
 
 
 class PhiMoEBlockSparseTop2MLP(nn.Module):
-    def __init__(self, config: PhiMoEConfig, ws: dict):
+    def __init__(self, config: PhiMoEConfig):
         super().__init__()
         self.ffn_dim = config.intermediate_size
         self.hidden_dim = config.hidden_size
-        self.act_fn = ACT2FN[config.hidden_act]
-        self.ws: dict[str, torch.Tensor] = ws
 
-    def forward(self, hidden_states: torch.Tensor, li: int, ei: int) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w1"].T
-        w2: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w2"].T       
-        w3: torch.Tensor = self.ws[f"layers.{li}.experts.{ei}.w3"].T
-        return (self.act_fn(hidden_states @ w1) * (hidden_states @ w3)) @ w2
+        self.w1 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
+        self.w2 = nn.Linear(self.ffn_dim, self.hidden_dim, bias=False)
+        self.w3 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
+
+        self.act_fn = ACT2FN[config.hidden_act]
+
+    def forward(self, hidden_states):
+        current_hidden_states = self.act_fn(self.w1(hidden_states)) * self.w3(hidden_states)
+        current_hidden_states = self.w2(current_hidden_states)
+        return current_hidden_states
+
         
     
 def sparsemixer(scores, top_k, jitter_eps):
@@ -832,7 +837,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config,  li: int, ws: dict,):
+    def __init__(self, config):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -844,17 +849,14 @@ class PhiMoESparseMoeBlock(nn.Module):
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
 
-        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config,ws) for _ in range(self.num_experts)])
+        self.experts = nn.ModuleList([PhiMoEBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
 
         self.router_jitter_noise = config.router_jitter_noise
-
-        self.li = li
-        
-
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        
+        """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
+        
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
         
@@ -865,16 +867,20 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
-        '''
+        #print(selected_experts)
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
 
+        # One hot encode the selected experts to create an expert mask
+        # this will be used to easily index which expert is going to be sollicitated
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
+        #print(expert_mask)
+        # Loop over all available experts in the model and perform the computation on each expert
         for expert_idx in range(self.num_experts):
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
+            
 
             if top_x.shape[0] == 0:
                 continue
@@ -882,45 +888,34 @@ class PhiMoESparseMoeBlock(nn.Module):
             # in torch it is faster to index using lists than torch tensors
             top_x_list = top_x.tolist()
             idx_list = idx.tolist()
-
+            
+            # Index the correct hidden states and compute the expert hidden state for
+            # the current expert. We need to make sure to multiply the output hidden
+            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-
+            
             current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
-
+            
+            # However `index_add_` only support torch tensors for indexing so we'll use
+            # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
             
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-
-        return final_hidden_states, router_logits
-        '''
-        results = torch.zeros_like(hidden_states)
-
-        eis, bis, nes = [], [], []
-        for ei in range(self.num_experts):
-            batch_idx, nth_expert = torch.where(selected_experts == ei)
-            if torch.numel(batch_idx) > 0:
-                    eis.append(ei)
-                    bis.append(batch_idx.to(device=hidden_states.device))
-                    nes.append(nth_expert.to(device=hidden_states.device))
-
-        for ei, batch_idx, nth_expert in zip(eis, bis, nes):
-            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
-            results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
-        return results
         
+        return final_hidden_states, router_logits
 
 
 class PhiMoEDecoderLayer(nn.Module):
-    def __init__(self, config: PhiMoEConfig, layer_idx: int, ws):
+    def __init__(self, config: PhiMoEConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config, layer_idx, ws)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
-
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -971,7 +966,7 @@ class PhiMoEDecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.block_sparse_moe(hidden_states)
+        hidden_states, router_logits = self.block_sparse_moe(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -982,7 +977,9 @@ class PhiMoEDecoderLayer(nn.Module):
         if use_cache:
             outputs += (present_key_value,)
 
-
+        if output_router_logits:
+            outputs += (router_logits,)
+            
         return outputs
 
 
@@ -1020,21 +1017,23 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         config: PhiMoEConfig
     """
 
-    def __init__(self, config: PhiMoEConfig, ws):
+    def __init__(self, config: PhiMoEConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-
+        
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+       
         self.layers = nn.ModuleList(
-            [PhiMoEDecoderLayer(config, layer_idx, ws) for layer_idx in range(config.num_hidden_layers)]
+            [PhiMoEDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+        
         self._attn_implementation = config._attn_implementation
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
-        self.post_init()
+        #self.post_init()
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1042,7 +1041,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    
+    # Ignore copy
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1185,21 +1184,22 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             attentions=all_self_attns,
             router_logits=all_router_logits,
         )
-    
 
 
 class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, config, ws):
+    def __init__(self, config):
         super().__init__(config)
-        self.model = PhiMoEModel(config, ws)
+        self.model = PhiMoEModel(config)
+       
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=self.config.lm_head_bias)
         self.num_experts = config.num_local_experts
         self.num_experts_per_tok = config.num_experts_per_tok
+        
         # Initialize weights and apply final processing
-        self.post_init()
+        #self.post_init()
 
     def get_input_embeddings(self):
         return self.model.embed_tokens
@@ -1375,41 +1375,72 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
             )
         return reordered_past
 
+
+
+    '''
     @staticmethod
     def load(model_path: Path, gpu: torch.device) -> "PhiMoEModel":
-        
-        non_experts = torch.load(model_path / "non-experts.pt")
-        experts_weights = {}
-        
+        config = PhiMoEConfig()
+        non_experts = torch.load(
+            model_path / "non-experts.pt",
+            map_location= gpu,
+            weights_only=True,
+            mmap=True,
+        )
+        experts_weight = {}
         for i in range(16):
-            weight = torch.load( model_path / f"experts-{i}.pt")
-
-            experts_weights.update(weight)
-        
-        
-        configuration = PhiMoEConfig.from_pretrained("microsoft/Phi-3.5-MoE-instruct")
-        model = PhiMoEForCausalLM(configuration, experts_weights)
-        model.load_state_dict(non_experts,  assign=True, strict=True)
-        
+            experts = torch.load(
+                model_path / f"experts-{i}.pt",
+                map_location= gpu,
+                weights_only=True,
+                mmap=True,
+            )
+            experts_weight.update(experts)
+    
+    '''     
+    '''
+    @staticmethod
+    def load(model_path: Path, gpu: torch.device) -> "PhiMoEModel":
+            weight = model_path
+            model = PhiMoEForCausalLM.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct",
+                                          state_dict = weight,
+                                          torch_dtype =  "auto",
+                                          device_map = gpu)
+    
+            return model
+    '''
+    @staticmethod
+    def load(model_path: Path, gpu: torch.device) -> "PhiMoEModel":
+        config = PhiMoEConfig()
+        model = PhiMoEForCausalLM(config)
+        weight = torch.load(model_path,
+                            map_location=gpu,
+                            weights_only=True,
+                            mmap=True,)
+        model.load_state_dict(weight)
   
         return model
 
 def main(model_path: str):  
     
     gpu = torch.device("cpu")
-    
-    
-    model = PhiMoEForCausalLM.load(Path(model_path), gpu)
-    model.eval()
+    model1 = PhiMoEForCausalLM.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct",
+                                          torch_dtype =  "auto"
+                                          )
 
-    tokenizer =  AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
-    
-    prompt = "给我讲讲中国十二生肖是怎么回事。"
-    inputs = tokenizer(prompt, return_tensors="pt")
+    model2 = PhiMoEForCausalLM.load(Path(model_path), gpu)
+    state_dict1 = model1.state_dict()
+    state_dict2 = model2.state_dict()
+    # 遍历所有权重项
+    for key in state_dict1:
+        if key in state_dict2:
+            if not torch.equal(state_dict1[key], state_dict2[key]):
+                print(f"{key} 权重不一致")
+        else:
+            print(f"{key} 不存在于 model2 中")
+    else:
+        print("所有对应的权重均一致")
 
-    
-    generate_ids = model.generate(inputs.input_ids, max_length=512)
-    print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0])
     
 
 if __name__ == "__main__":
@@ -1420,4 +1451,7 @@ if __name__ == "__main__":
     main(
         args.model_path
     )
+
+
+
 
