@@ -906,6 +906,8 @@ class PhiMoESparseMoeBlock(nn.Module):
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
             ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
+
+        results = results.reshape(batch_size, sequence_length, hidden_dim)
         return results
         
 
@@ -1388,6 +1390,8 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         
         
         configuration = PhiMoEConfig.from_pretrained("microsoft/Phi-3.5-MoE-instruct")
+        #configuration.pad_token_id = configuration.eos_token_id
+        #print(configuration.to_dict()) 
         model = PhiMoEForCausalLM(configuration, experts_weights)
         model.load_state_dict(non_experts,  assign=True, strict=True)
         
@@ -1403,13 +1407,25 @@ def main(model_path: str):
     model.eval()
 
     tokenizer =  AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
+    print(tokenizer.pad_token_id == tokenizer.eos_token_id)
     
-    prompt = "给我讲讲中国十二生肖是怎么回事。"
-    inputs = tokenizer(prompt, return_tensors="pt")
-
-    
-    generate_ids = model.generate(inputs.input_ids, max_length=512)
-    print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0])
+    #tokenizer.pad_token_id = 1498
+    prompt = [
+              "nihao",
+              "nihaoawdawdadwd",
+              "nihao1",
+             
+              "awdawd"]
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, return_attention_mask=True)
+    print(inputs.input_ids)
+    generate_ids = model.generate(inputs.input_ids, max_length= 128)
+    decoded_outputs = tokenizer.batch_decode(
+                                generate_ids,
+                                skip_special_tokens=True,
+                                clean_up_tokenization_spaces=False
+                            )
+    for i, text in enumerate(decoded_outputs):
+        print(f"Output {i}:\n{text}\n{'='*40}")
     
 
 if __name__ == "__main__":

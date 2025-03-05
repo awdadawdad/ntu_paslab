@@ -869,6 +869,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         # router_logits: (batch * sequence_length, n_experts)
         
         router_logits = self.gate(hidden_states)
+        router_logits = router_logits[:, :12]
 
         routing_weights, selected_experts = sparsemixer(
             router_logits, 
@@ -906,7 +907,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         results = torch.zeros_like(hidden_states)
 
         eis, bis, nes = [], [], []
-        for ei in range(self.num_experts):
+        for ei in range(self.num_experts - 4):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
             if torch.numel(batch_idx) > 0:
                 if ei == WORLD_RANK:
@@ -917,6 +918,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
             ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
+        results = results.reshape(batch_size, sequence_length, hidden_dim)
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
         return results
         
@@ -1400,7 +1402,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         )
         experts_weights ={}
         
-        for i in range (WORLD_RANK , WORLD_RANK + (configuration.self.num_local_experts // WORLD_SIZE)):
+        for i in range (WORLD_RANK , WORLD_RANK + (16 // WORLD_SIZE)):
             experts = torch.load(
                 model_path / f"experts-{i}.pt",
                 map_location=gpu,
@@ -1429,8 +1431,9 @@ def main(model_path: str,
     assert prompt or (prompt_path and n_prompts and n_prompts > 0)
     assert n_prompts % batch_size == 0
     prompts: list[str] = None
+    
     if prompt:
-        prompts = [prompt]
+        prompts = prompt
     else:
         dataset: list[str] = get_json(Path(prompt_path))["prompts"]
         n_repeats = -(n_prompts // -len(dataset))  # ceil division
@@ -1453,14 +1456,23 @@ def main(model_path: str,
     torch.cuda.cudart().cudaProfilerStart()
     
     #prompt = "what do i do if i stepped in dog poo?"
-    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = tokenizer(prompts, return_tensors="pt",  padding=True, truncation=True)
 
-    
-    generate_ids = model.generate(inputs.input_ids, max_tokens)
+    inputs = inputs.to(gpu)   
+    generate_ids = model.generate(inputs.input_ids, max_new_tokens = max_tokens)
 
     if WORLD_RANK == 0:
-        print("=" * 20)    
-        print(tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0])
+        print("=" * 40)
+        print("=" * 40)     
+        decoded_outputs = tokenizer.batch_decode(
+                                generate_ids,
+                                skip_special_tokens=True,
+                                clean_up_tokenization_spaces=False
+                            )
+        for i, text in enumerate(decoded_outputs):
+            print(f"Output {i}:\n{text}\n{'='*40}")
+
+
     
     torch.cuda.cudart().cudaProfilerStop()
     dist.barrier(group=group)
@@ -1482,10 +1494,10 @@ if __name__ == "__main__":
     main(
         args.model_path,
         args.prompt,
-        #args.prompt_path,
-        #args.n_prompts,
-        #args.batch_size,
+        args.prompt_path,
+        args.n_prompts,
+        args.batch_size,
         args.max_tokens,
-        #args.hide_resp,
+        args.hide_resp,
     )
 
