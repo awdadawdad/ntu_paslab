@@ -869,7 +869,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         # router_logits: (batch * sequence_length, n_experts)
         
         router_logits = self.gate(hidden_states)
-        router_logits = router_logits[:, :12]
+        #router_logits = router_logits[:, :12]
 
         routing_weights, selected_experts = sparsemixer(
             router_logits, 
@@ -907,7 +907,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         results = torch.zeros_like(hidden_states)
 
         eis, bis, nes = [], [], []
-        for ei in range(self.num_experts - 4):
+        for ei in range(self.num_experts):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
             if torch.numel(batch_idx) > 0:
                 if ei == WORLD_RANK:
