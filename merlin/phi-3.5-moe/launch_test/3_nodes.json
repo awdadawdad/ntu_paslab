@@ -36,7 +36,7 @@
             "node_rank": 2,
             "ngpus": 2,
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
-            "model_path": "/mnt/data1/llm_team/merlin_mixtral_weights/ep",
+            "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 2,
             "profile" : false,
             "profiling_output":"n46-v4-experts-tp-short-8-4-128"
