@@ -1410,7 +1410,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
                 mmap=True,
             )
             experts_weights.update(experts)
-        print(experts_weights.keys())
+        
         
         
         
