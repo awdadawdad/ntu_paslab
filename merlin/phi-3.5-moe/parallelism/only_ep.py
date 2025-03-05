@@ -910,7 +910,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         for ei in range(self.num_experts):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
             if torch.numel(batch_idx) > 0:
-                if ei == WORLD_RANK:
+                if ei >= (16 // WORLD_SIZE) * WORLD_RANK and  ei <=(WORLD_RANK +1)*(16 // WORLD_SIZE) :
                     eis.append(ei)
                     bis.append(batch_idx.to(device=hidden_states.device))
                     nes.append(nth_expert.to(device=hidden_states.device))
