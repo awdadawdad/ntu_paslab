@@ -1402,7 +1402,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         )
         experts_weights ={}
         
-        for i in range (WORLD_RANK , WORLD_RANK + (16 // WORLD_SIZE)):
+        for i in range ((16 // WORLD_SIZE) * WORLD_RANK ,  (WORLD_RANK +1)*(16 // WORLD_SIZE) ):
             experts = torch.load(
                 model_path / f"experts-{i}.pt",
                 map_location=gpu,
