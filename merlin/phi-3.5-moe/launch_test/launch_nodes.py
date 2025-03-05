@@ -133,7 +133,7 @@ def main():
             + "'"
             + f'export PATH="$PATH:/home/{username}/miniconda3/condabin/" && '
             + f"cd /home/{username}/ntu_paslab && "
-            #+ f"git pull origin main && "
+            + f"git pull origin main && "
             + f"conda activate phi && "
             + f"python /home/{username}/ntu_paslab/merlin/phi-3.5-moe/launch/run_node.py "
         )
