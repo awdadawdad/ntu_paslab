@@ -1458,7 +1458,7 @@ def main(model_path: str,
     
     #prompt = "what do i do if i stepped in dog poo?"
     inputs = tokenizer(prompts, return_tensors="pt",  padding=True, truncation=True)
-
+    input_len = inputs.input_ids.shape[-1]
     inputs = inputs.to(gpu)   
     generate_ids = model.generate(inputs.input_ids, max_new_tokens = max_tokens)
 
@@ -1470,7 +1470,8 @@ def main(model_path: str,
                                 skip_special_tokens=True,
                                 clean_up_tokenization_spaces=False
                             )
-        for i, text in enumerate(decoded_outputs):
+        answer = decoded_outputs[:, input_len :]
+        for i, text in enumerate(answer):
             print(f"Output {i}:\n{text}\n{'='*40}")
 
 
