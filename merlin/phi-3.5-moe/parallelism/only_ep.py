@@ -1472,7 +1472,7 @@ def main(model_path: str,
                                 clean_up_tokenization_spaces=False
                             )
        
-        for i, text in enumerate(answer):
+        for i, text in enumerate(decoded_outputs):
             print(f"Output {i}:\n{text}\n{'='*40}")
 
 
