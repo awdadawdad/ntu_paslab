@@ -1464,13 +1464,14 @@ def main(model_path: str,
 
     if WORLD_RANK == 0:
         print("=" * 40)
-        print("=" * 40)     
+        print("=" * 40)   
+        output_tokens = [ids[input_len:] for ids in generate_ids]  
         decoded_outputs = tokenizer.batch_decode(
-                                generate_ids,
+                                output_tokens,
                                 skip_special_tokens=True,
                                 clean_up_tokenization_spaces=False
                             )
-        answer = decoded_outputs[:, input_len :]
+       
         for i, text in enumerate(answer):
             print(f"Output {i}:\n{text}\n{'='*40}")
 
