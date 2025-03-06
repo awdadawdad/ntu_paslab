@@ -1473,7 +1473,7 @@ def main(model_path: str,
                             )
        
         for i, text in enumerate(decoded_outputs):
-            print(f"Output {i}:\n{text}\n{'='*40}")
+            print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
 
 
     
