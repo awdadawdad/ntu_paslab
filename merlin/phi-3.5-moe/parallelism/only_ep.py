@@ -1458,14 +1458,17 @@ def main(model_path: str,
     
     #prompt = "what do i do if i stepped in dog poo?"
     inputs = tokenizer(prompts, return_tensors="pt",  padding=True, truncation=True)
+    print(inputs.input_ids.shape)
     input_len = inputs.input_ids.shape[-1]
     inputs = inputs.to(gpu)   
     generate_ids = model.generate(inputs.input_ids, max_new_tokens = max_tokens)
+    print(generate_ids.shape)
 
     if WORLD_RANK == 0:
         print("=" * 40)
         print("=" * 40)   
         output_tokens = [ids[input_len:] for ids in generate_ids]  
+        
         decoded_outputs = tokenizer.batch_decode(
                                 output_tokens,
                                 skip_special_tokens=True,

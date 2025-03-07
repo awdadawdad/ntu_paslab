@@ -1,8 +1,8 @@
 {
     "world_size": 3,
-    "master_addr": "10.10.10.1",
+    "master_addr": "10.10.10.2",
     "master_port": "9091",
-    "username":"gaven",
+    "username": "gaven",
     "shared_exec_args": {
         "prompt_path": "~/ntu_paslab_llm/mixtral/prompts/diverse_short.json",
         "n_prompts": 1,
@@ -11,35 +11,35 @@
         "hide_resp": false
     },
     "nodes": {
+        "10.10.10.2": {
+            "ssh_port": 9046,
+            "node_rank": 0,
+            "ngpus": 4,
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
+            "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
+            "node_id": 1,
+            "profile": false,
+            "profiling_output": "n46-v4-experts-tp-short-8-4-128"
+        },
         "10.10.10.1": {
             "ssh_port": 9051,
-            "node_rank": 0,
+            "node_rank": 1,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
             "model_path": "/mnt/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 0,
             "profile": false,
             "profiling_output": "n51-v4-experts-tp-short-8-4-128"
         },
-        "10.10.10.2": {
-            "ssh_port": 9046,
-            "node_rank": 1,
-            "ngpus": 4,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
-            "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
-            "node_id": 1,
-            "profile" : false,
-            "profiling_output":"n46-v4-experts-tp-short-8-4-128"
-        },
-	"10.10.10.3": {
+        "10.10.10.3": {
             "ssh_port": 9036,
             "node_rank": 2,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
             "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/ep",
             "node_id": 2,
-            "profile" : false,
-            "profiling_output":"n46-v4-experts-tp-short-8-4-128"
-	}
+            "profile": false,
+            "profiling_output": "n46-v4-experts-tp-short-8-4-128"
+        }
     }
 }
