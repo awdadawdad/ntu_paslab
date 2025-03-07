@@ -1457,7 +1457,10 @@ def main(model_path: str,
     model.eval()
 
     # warm up start
-    warmup_prompt = "what do i do if i stepped in dog poo?"
+    warmup_prompt = ["what do i do if i stepped in dog poo?",
+                     "hello",
+                     "how are you"
+                     "how is weather"]
     warmup_inputs = tokenizer(warmup_prompt, return_tensors="pt",  padding=True, truncation=True).to(gpu)
     warmup_generate_ids = model.generate(warmup_inputs.input_ids, max_new_tokens = max_tokens)
     # warm up end
@@ -1497,7 +1500,7 @@ def main(model_path: str,
 
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(gpu)
     input_len = inputs.input_ids.shape[-1]
-
+    assert batch_size == inputs.input_ids.shape[0]
     torch.cuda.synchronize()
     # Prefill 计时开始
     prefill_start = time.perf_counter()
@@ -1514,8 +1517,7 @@ def main(model_path: str,
     prefill_end = time.perf_counter()
 
     prefill_time = prefill_end - prefill_start
-    if WORLD_RANK == 0:
-        print(f"Prefill 耗时: {prefill_time:.4f} 秒")
+    
 
     # 从Prefill拿到的past_key_values用于继续Decoding
     past_key_values = prefill_outputs.past_key_values
@@ -1539,8 +1541,7 @@ def main(model_path: str,
     decoding_end = time.perf_counter()
 
     decoding_time = decoding_end - decoding_start
-    if WORLD_RANK == 0:
-        print(f"Decoding 耗时: {decoding_time:.4f} 秒")
+    
 
     # 完整的生成序列：
     final_generated_ids = decoding_outputs.sequences
@@ -1558,8 +1559,8 @@ def main(model_path: str,
         for i, text in enumerate(decoded_outputs):
             print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
         
-        print(f"Prefill time: {prefill_time}")
-        print(f"Prefill time: {decoding_time}")
+        print(f"prefill throughput: {batch_size * input_len / prefill_time}")
+        print(f"decoding throughput: {batch_size * max_tokens /  decoding_time}")
         
         
         
