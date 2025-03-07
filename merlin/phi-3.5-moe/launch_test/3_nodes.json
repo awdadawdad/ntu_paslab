@@ -1,21 +1,21 @@
 {
     "world_size": 3,
-    "master_addr": "10.10.10.2",
+    "master_addr": "10.10.10.1",
     "master_port": "9091",
     "username": "gaven",
     "shared_exec_args": {
         "prompt_path": "~/ntu_paslab_llm/mixtral/prompts/diverse_short.json",
-        "n_prompts": 1,
-        "batch_size": 1,
+        "n_prompts": 4,
+        "batch_size": 4,
         "max_tokens": 128,
         "hide_resp": false
     },
     "nodes": {
         "10.10.10.2": {
             "ssh_port": 9046,
-            "node_rank": 0,
+            "node_rank": 1,
             "ngpus": 4,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 1,
             "profile": false,
@@ -23,9 +23,9 @@
         },
         "10.10.10.1": {
             "ssh_port": 9051,
-            "node_rank": 1,
+            "node_rank": 0,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 0,
             "profile": false,
@@ -35,7 +35,7 @@
             "ssh_port": 9036,
             "node_rank": 2,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/test_cluster.py",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/ep",
             "node_id": 2,
             "profile": false,
