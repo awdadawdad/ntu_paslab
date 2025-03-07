@@ -125,7 +125,10 @@ def main():
         print(err, file=sys.stderr)
         sys.exit(1)
 
-    header = "torchrun "
+    if args.node_id == 2:
+        header = 'NCCL_SOCKET_IFNAME="eno1" torchrun '
+    else:
+        header = "torchrun "
     if args.profile:
         prof_cmd = (
             "nsys profile "
