@@ -1429,6 +1429,8 @@ def main(model_path: str,
             hide_resp: bool = False,
             ):  
     
+    
+
     assert prompt or (prompt_path and n_prompts and n_prompts > 0)
     assert n_prompts % batch_size == 0
     prompts: list[str] = None
@@ -1454,8 +1456,15 @@ def main(model_path: str,
     model = PhiMoEForCausalLM.load(Path(model_path), gpu, group)
     model.eval()
 
+    # warm up start
+    warmup_prompt = "what do i do if i stepped in dog poo?"
+    warmup_inputs = tokenizer(warmup_prompt, return_tensors="pt",  padding=True, truncation=True).to(gpu)
+    warmup_generate_ids = model.generate(warmup_inputs.input_ids, max_new_tokens = max_tokens)
+    # warm up end
+
+
     torch.cuda.cudart().cudaProfilerStart()
-    
+    '''
     #prompt = "what do i do if i stepped in dog poo?"
     inputs = tokenizer(prompts, return_tensors="pt",  padding=True, truncation=True)
     print(inputs.input_ids.shape)
@@ -1480,6 +1489,82 @@ def main(model_path: str,
 
 
     
+    torch.cuda.cudart().cudaProfilerStop()
+    dist.barrier(group=group)
+    dist.destroy_process_group()
+
+    '''
+
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(gpu)
+    input_len = inputs.input_ids.shape[-1]
+
+    torch.cuda.synchronize()
+    # Prefill 计时开始
+    prefill_start = time.perf_counter()
+
+    # 执行 Prefill 阶段（生成第一个token）
+    prefill_outputs = model.generate(
+        inputs.input_ids,
+        max_new_tokens=1,
+        use_cache=True,
+        return_dict_in_generate=True
+    )
+
+    torch.cuda.synchronize()
+    prefill_end = time.perf_counter()
+
+    prefill_time = prefill_end - prefill_start
+    if WORLD_RANK == 0:
+        print(f"Prefill 耗时: {prefill_time:.4f} 秒")
+
+    # 从Prefill拿到的past_key_values用于继续Decoding
+    past_key_values = prefill_outputs.past_key_values
+    generated_ids = prefill_outputs.sequences
+
+    # Decoding阶段继续生成
+    torch.cuda.synchronize()
+    decoding_start = time.perf_counter()
+
+    # Decoding 阶段生成余下tokens
+    decoding_outputs = model.generate(
+        inputs=None,
+        input_ids=generated_ids,
+        max_new_tokens=max_tokens - 1,
+        past_key_values=past_key_values,
+        use_cache=True,
+        return_dict_in_generate=True
+    )
+
+    torch.cuda.synchronize()
+    decoding_end = time.perf_counter()
+
+    decoding_time = decoding_end - decoding_start
+    if WORLD_RANK == 0:
+        print(f"Decoding 耗时: {decoding_time:.4f} 秒")
+
+    # 完整的生成序列：
+    final_generated_ids = decoding_outputs.sequences
+    output_tokens = [ids[input_len:] for ids in final_generated_ids]  
+
+    decoded_outputs = tokenizer.batch_decode(
+        output_tokens,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False
+    )
+
+    if WORLD_RANK == 0:
+        print("=" * 40)
+        print("=" * 40)   
+        for i, text in enumerate(decoded_outputs):
+            print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
+        
+        print(f"Prefill time: {prefill_time}")
+        print(f"Prefill time: {decoding_time}")
+        
+        
+        
+        
+
     torch.cuda.cudart().cudaProfilerStop()
     dist.barrier(group=group)
     dist.destroy_process_group()
