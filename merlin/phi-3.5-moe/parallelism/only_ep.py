@@ -1441,7 +1441,7 @@ def main(model_path: str,
         prompts = (dataset * n_repeats)[:n_prompts]
     
     gpu = torch.device(f"cuda:{LOCAL_RANK}")
-    print(gpu)
+    #print(gpu)
     dist.init_process_group(
         "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu
     )
