@@ -132,6 +132,7 @@ def main():
     elif args.node_id == 2:
         header = 'NCCL_SOCKET_IFNAME="eno1" torchrun '
     '''
+    header = "torchrun "
     if args.profile:
         prof_cmd = (
             "nsys profile "
