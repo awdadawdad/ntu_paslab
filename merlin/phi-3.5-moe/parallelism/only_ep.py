@@ -1509,8 +1509,8 @@ def main(model_path: str,
     prefill_outputs = model.generate(
         inputs.input_ids,
         max_new_tokens=1,
-        use_cache=True,
-        return_dict_in_generate=True
+        #use_cache=True,
+        #return_dict_in_generate=True
     )
 
     torch.cuda.synchronize()
@@ -1520,15 +1520,16 @@ def main(model_path: str,
     
 
     # 从Prefill拿到的past_key_values用于继续Decoding
-    past_key_values = prefill_outputs.past_key_values
-    generated_ids = prefill_outputs.sequences
+    #past_key_values = prefill_outputs.past_key_values
+    #generated_ids = prefill_outputs.sequences
 
     # Decoding阶段继续生成
     torch.cuda.synchronize()
-    decoding_start = time.perf_counter()
+    total_start = time.perf_counter()
 
     # Decoding 阶段生成余下tokens
-    decoding_outputs = model.generate(
+    '''
+    #decoding_outputs = model.generate(
         inputs=None,
         input_ids=generated_ids,
         max_new_tokens=max_tokens - 1,
@@ -1536,15 +1537,22 @@ def main(model_path: str,
         use_cache=True,
         return_dict_in_generate=True
     )
+    '''
+    total_output = model.generate(
+        inputs.input_ids,
+        max_new_tokens=max_tokens,
+        #use_cache=True,
+        #return_dict_in_generate=True
+    )
 
     torch.cuda.synchronize()
-    decoding_end = time.perf_counter()
+    total_end = time.perf_counter()
 
-    decoding_time = decoding_end - decoding_start
+    total_time = total_end - total_start
     
 
     # 完整的生成序列：
-    final_generated_ids = decoding_outputs.sequences
+    final_generated_ids = total_output.sequences
     output_tokens = [ids[input_len:] for ids in final_generated_ids]  
 
     decoded_outputs = tokenizer.batch_decode(
@@ -1560,10 +1568,8 @@ def main(model_path: str,
             print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
         
         print(f"prefill throughput: {batch_size * input_len / prefill_time}")
-        print(f"decoding throughput: {batch_size * max_tokens /  decoding_time}")
-        
-        
-        
+        print(f"decoding throughput: {batch_size * max_tokens / (total_time - prefill_time)}")
+         
         
 
     torch.cuda.cudart().cudaProfilerStop()
