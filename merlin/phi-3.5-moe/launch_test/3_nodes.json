@@ -5,10 +5,10 @@
     "username": "gaven",
     "shared_exec_args": {
         "prompt_path": "~/ntu_paslab_llm/mixtral/prompts/diverse_short.json",
-        "n_prompts": 256,
-        "batch_size": 128,
-        "max_tokens": 128,
-        "hide_resp": false
+        "n_prompts": 2,
+        "batch_size": 1,
+        "max_tokens": 8,
+        "hide_resp":true
     },
     "nodes": {
         "10.10.10.2": {
@@ -19,7 +19,7 @@
             "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 1,
             "profile": false,
-            "profiling_output": "n46-v4-experts-tp-short-8-4-128"
+            "profiling_output": "n46-phi-ep-short-16-4-128"
         },
         "10.10.10.1": {
             "ssh_port": 9051,
@@ -29,7 +29,7 @@
             "model_path": "/mnt/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 0,
             "profile": false,
-            "profiling_output": "n51-v4-experts-tp-short-8-4-128"
+            "profiling_output": "n51-phi-ep-short-16-4-128"
         },
         "10.10.10.3": {
             "ssh_port": 9036,
@@ -38,8 +38,8 @@
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/ep",
             "node_id": 2,
-            "profile": false,
-            "profiling_output": "n46-v4-experts-tp-short-8-4-128"
+            "profile": true,
+            "profiling_output": "n36-phi-ep-short-2-1-8"
         }
     }
 }

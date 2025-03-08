@@ -1467,7 +1467,7 @@ def main(model_path: str,
     # warm up end
 
 
-    torch.cuda.cudart().cudaProfilerStart()
+
     '''
     #prompt = "what do i do if i stepped in dog poo?"
     inputs = tokenizer(prompts, return_tensors="pt",  padding=True, truncation=True)
@@ -1524,10 +1524,11 @@ def main(model_path: str,
 
         prefill_time = prefill_end - prefill_start
         
-
+        
         torch.cuda.synchronize()
         total_start = time.perf_counter()
-
+        if end == n_prompts + 1:
+            torch.cuda.cudart().cudaProfilerStart()
         
         '''
         #decoding_outputs = model.generate(
@@ -1547,13 +1548,14 @@ def main(model_path: str,
         )
 
         torch.cuda.synchronize()
+        if end == n_prompts + 1:
+            torch.cuda.cudart().cudaProfilerStop()
         total_end = time.perf_counter()
-
         total_time = total_end - total_start
         
 
         
-        
+    
         if WORLD_RANK == 0:
 
             output_tokens = [ids[input_len:] for ids in total_output]  
@@ -1579,13 +1581,14 @@ def main(model_path: str,
         
         start = end
 
+    
     if WORLD_RANK == 0:
         print("=" * 40)
         print("RUN STATISTICS")
         print(f"avg prefill throughput: {int(mean(prefill_tps))} t/s")
         print(f"avg decode throughput: {int(mean(decode_tps))} t/s")
 
-    torch.cuda.cudart().cudaProfilerStop()
+    
     dist.barrier(group=group)
     dist.destroy_process_group()
 
