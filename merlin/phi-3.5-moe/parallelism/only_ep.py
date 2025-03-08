@@ -1528,7 +1528,7 @@ def main(model_path: str,
         torch.cuda.synchronize()
         total_start = time.perf_counter()
         if end == n_prompts + 1:
-            torch.cuda.cudart().cudaProfilerStart()
+            torch.cuda.profiler.start()  
         
         '''
         #decoding_outputs = model.generate(
@@ -1549,7 +1549,7 @@ def main(model_path: str,
 
         torch.cuda.synchronize()
         if end == n_prompts + 1:
-            torch.cuda.cudart().cudaProfilerStop()
+            torch.cuda.profiler.stop()
         total_end = time.perf_counter()
         total_time = total_end - total_start
         
