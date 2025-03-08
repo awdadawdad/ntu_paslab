@@ -1582,8 +1582,8 @@ def main(model_path: str,
     if WORLD_RANK == 0:
         print("=" * 40)
         print("RUN STATISTICS")
-        print(f"avg prefill throughput: {mean(prefill_tps):.2f} t/s")
-        print(f"avg decode throughput: {mean(decode_tps):.2f} t/s")
+        print(f"avg prefill throughput: {int(mean(prefill_tps))} t/s")
+        print(f"avg decode throughput: {int(mean(decode_tps))} t/s")
 
     torch.cuda.cudart().cudaProfilerStop()
     dist.barrier(group=group)
