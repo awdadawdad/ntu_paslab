@@ -1506,7 +1506,7 @@ def main(model_path: str,
 
         inputs = tokenizer(prompt_batch, return_tensors="pt", padding=True, truncation=True).to(gpu)
         input_len = inputs.input_ids.shape[-1]
-        assert batch_size == inputs.input_ids.shape[0]
+        assert n_prompts == batch_size * inputs.input_ids.shape[0]
         torch.cuda.synchronize()
         # Prefill time start
         prefill_start = time.perf_counter()
