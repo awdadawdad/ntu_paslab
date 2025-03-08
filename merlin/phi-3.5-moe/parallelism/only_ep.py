@@ -19,6 +19,7 @@ import math
 import warnings
 from typing import List, Optional, Tuple, Union
 import argparse
+from statistics import mean
 
 import torch
 import torch.nn.functional as F
@@ -1497,81 +1498,91 @@ def main(model_path: str,
     dist.destroy_process_group()
 
     '''
+    prefill_tps = []
+    decode_tps = []
+    start = 0
+    for end in range(batch_size, n_prompts + 1, batch_size):
+        prompt_batch = prompts[start:end]
 
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(gpu)
-    input_len = inputs.input_ids.shape[-1]
-    assert batch_size == inputs.input_ids.shape[0]
-    torch.cuda.synchronize()
-    # Prefill 计时开始
-    prefill_start = time.perf_counter()
+        inputs = tokenizer(prompt_batch, return_tensors="pt", padding=True, truncation=True).to(gpu)
+        input_len = inputs.input_ids.shape[-1]
+        assert batch_size == inputs.input_ids.shape[0]
+        torch.cuda.synchronize()
+        # Prefill time start
+        prefill_start = time.perf_counter()
 
-    # 执行 Prefill 阶段（生成第一个token）
-    prefill_outputs = model.generate(
-        inputs.input_ids,
-        max_new_tokens=1,
-        #use_cache=True,
-        #return_dict_in_generate=True
-    )
-
-    torch.cuda.synchronize()
-    prefill_end = time.perf_counter()
-
-    prefill_time = prefill_end - prefill_start
-    
-
-    # 从Prefill拿到的past_key_values用于继续Decoding
-    #past_key_values = prefill_outputs.past_key_values
-    #generated_ids = prefill_outputs.sequences
-
-    # Decoding阶段继续生成
-    torch.cuda.synchronize()
-    total_start = time.perf_counter()
-
-    # Decoding 阶段生成余下tokens
-    '''
-    #decoding_outputs = model.generate(
-        inputs=None,
-        input_ids=generated_ids,
-        max_new_tokens=max_tokens - 1,
-        past_key_values=past_key_values,
-        use_cache=True,
-        return_dict_in_generate=True
-    )
-    '''
-    total_output = model.generate(
-        inputs.input_ids,
-        max_new_tokens=max_tokens,
-        #use_cache=True,
-        #return_dict_in_generate=True
-    )
-
-    torch.cuda.synchronize()
-    total_end = time.perf_counter()
-
-    total_time = total_end - total_start
-    
-
-    # 完整的生成序列：
-    
-    if WORLD_RANK == 0:
-
-        output_tokens = [ids[input_len:] for ids in total_output]  
-
-        decoded_outputs = tokenizer.batch_decode(
-            output_tokens,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False
+        
+        prefill_outputs = model.generate(
+            inputs.input_ids,
+            max_new_tokens=1,
+            #use_cache=True,
+            #return_dict_in_generate=True
         )
 
+        torch.cuda.synchronize()
+        prefill_end = time.perf_counter()
+
+        prefill_time = prefill_end - prefill_start
+        
+
+        torch.cuda.synchronize()
+        total_start = time.perf_counter()
+
+        
+        '''
+        #decoding_outputs = model.generate(
+            inputs=None,
+            input_ids=generated_ids,
+            max_new_tokens=max_tokens - 1,
+            past_key_values=past_key_values,
+            use_cache=True,
+            return_dict_in_generate=True
+        )
+        '''
+        total_output = model.generate(
+            inputs.input_ids,
+            max_new_tokens=max_tokens,
+            #use_cache=True,
+            #return_dict_in_generate=True
+        )
+
+        torch.cuda.synchronize()
+        total_end = time.perf_counter()
+
+        total_time = total_end - total_start
+        
+
+        
+        
+        if WORLD_RANK == 0:
+
+            output_tokens = [ids[input_len:] for ids in total_output]  
+
+            decoded_outputs = tokenizer.batch_decode(
+                output_tokens,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )
+
+            print("=" * 40)
+            print("=" * 40)   
+            if not hide_resp:
+                for i, text in enumerate(decoded_outputs):
+                    print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
+            prefill_throughput = batch_size * input_len / prefill_time
+            decode_throughput = batch_size * max_tokens / (total_time - prefill_time)
+            print(f"prefill throughput: {prefill_throughput}")
+            print(f"decoding throughput: {decode_throughput}")
+            
+            prefill_tps.append(prefill_throughput)
+            decode_tps.append(decode_throughput)
+
+
+    if WORLD_RANK == 0:
         print("=" * 40)
-        print("=" * 40)   
-        for i, text in enumerate(decoded_outputs):
-            print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
-        
-        print(f"prefill throughput: {batch_size * input_len / prefill_time}")
-        print(f"decoding throughput: {batch_size * max_tokens / (total_time - prefill_time)}")
-         
-        
+        print("RUN STATISTICS")
+        print(f"avg prefill throughput: {mean(prefill_tps):.2f} t/s")
+        print(f"avg decode throughput: {mean(decode_tps):.2f} t/s")
 
     torch.cuda.cudart().cudaProfilerStop()
     dist.barrier(group=group)
