@@ -1576,7 +1576,8 @@ def main(model_path: str,
             
             prefill_tps.append(prefill_throughput)
             decode_tps.append(decode_throughput)
-
+        
+        start = end
 
     if WORLD_RANK == 0:
         print("=" * 40)
