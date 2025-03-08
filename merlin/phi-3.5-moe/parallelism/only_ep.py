@@ -1515,7 +1515,7 @@ def main(model_path: str,
         prefill_outputs = model.generate(
             inputs.input_ids,
             max_new_tokens=1,
-            #use_cache=True,
+            use_cache=True,
             #return_dict_in_generate=True
         )
 
