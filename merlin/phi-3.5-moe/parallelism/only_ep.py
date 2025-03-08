@@ -1552,16 +1552,17 @@ def main(model_path: str,
     
 
     # 完整的生成序列：
-    final_generated_ids = total_output.sequences
-    output_tokens = [ids[input_len:] for ids in final_generated_ids]  
-
-    decoded_outputs = tokenizer.batch_decode(
-        output_tokens,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False
-    )
-
+    
     if WORLD_RANK == 0:
+
+        output_tokens = [ids[input_len:] for ids in total_output]  
+
+        decoded_outputs = tokenizer.batch_decode(
+            output_tokens,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+
         print("=" * 40)
         print("=" * 40)   
         for i, text in enumerate(decoded_outputs):
