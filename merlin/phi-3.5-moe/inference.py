@@ -750,6 +750,7 @@ class PhiMoEBlockSparseTop2MLP(nn.Module):
         self.w1 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
         self.w2 = nn.Linear(self.ffn_dim, self.hidden_dim, bias=False)
         self.w3 = nn.Linear(self.hidden_dim, self.ffn_dim, bias=False)
+        
 
         self.act_fn = ACT2FN[config.hidden_act]
 
