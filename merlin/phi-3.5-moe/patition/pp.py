@@ -9,7 +9,7 @@ import glob
 import json
 import logging
 import torch
-
+import fnmatch
 
 
 class Partitioner:
@@ -39,46 +39,49 @@ class Partitioner:
           
         return weight
 
-    def partition_expert_weights(self, ws: dict, num_gpu: int) -> dict:
+    def layers(self, ws: dict, num_gpu: int) -> dict:
         num_layers = self.model_config["num_hidden_layers"]
-        num_experts = self.model_config["num_local_experts"]
 
         dicts = [{} for _ in range(num_gpu)]
-        for experts in range(num_experts):
-            
-            for li in range(num_layers):
-                w1: torch.Tensor = ws.pop(f"model.layers.{li}.block_sparse_moe.experts.{experts}.w1.weight")
-                w2: torch.Tensor = ws.pop(f"model.layers.{li}.block_sparse_moe.experts.{experts}.w2.weight")
-                w3: torch.Tensor = ws.pop(f"model.layers.{li}.block_sparse_moe.experts.{experts}.w3.weight")
- 
-                
-                w1 = torch.chunk(w1, num_gpu, dim = 0)
-                #print(len(w1))
-                w2 = torch.chunk(w2, num_gpu, dim = 1)
-                #print(len(w2))
-                w3 = torch.chunk(w3, num_gpu, dim = 0)
-                #print(len(w3))
-                #print("     ")
-                for i in range (num_gpu):
-                    dicts[i][f"layer.{li}.expert.{experts}.w1"] = w1[i].clone()
-                    dicts[i][f"layer.{li}.expert.{experts}.w2"] = w2[i].clone()
-                    dicts[i][f"layer.{li}.expert.{experts}.w3"] = w3[i].clone()
-
-            
-        for i in range (num_gpu):
-            torch.save(dicts[i], self.output_path / f"gpu{i}.pt")
-        return ws  
-
-
-    def partition_non_expert_weights(self, ws: dict) -> None:
         
-        torch.save(ws, self.output_path / f"non-experts.pt")
+        all_keys = [{} for _ in range(num_layers)]
+        for li in range(num_layers):
+
+            pattern = f"model.layers.{li}.*"
+              
+            for key in list(ws.keys()):
+                if fnmatch.fnmatch(key, pattern):
+                    value = ws.pop(key)
+                    all_keys[li][key] = value
+
+        step = num_layers // num_gpu
+        for i in range (num_gpu):
+            for j in range (step):
+                dicts[i].update(all_keys[i*step + j])
+            dicts[i]["model.norm.bias"] = ws["model.norm.bias"]
+            dicts[i]["model.norm.weight"] = ws["model.norm.weight"]
+            torch.save(dicts[i], self.output_path / f"gpu{i}.pt")
+        
+        return ws
+
+        
+        
+
+    def last_layer(self, ws: dict) -> None:
+        ws.pop("model.norm.weight")
+        ws.pop("model.norm.bias")
+        embed_tokens = {}
+        value = ws.pop("model.embed_tokens.weight")
+        embed_tokens["model.embed_tokens.weight"] = value
+        torch.save(embed_tokens, self.output_path / f"embed_tokens.pt")
+        torch.save(ws, self.output_path / f"lm_head.pt")
+        
 
     def start(self) -> None:
-        ws = self.partition_expert_weights(self.load_weights(), 8)
-        logging.info("finished partitioning experts weights")
-        self.partition_non_expert_weights(ws)
-        logging.info("finished partitioning non-experts weights")
+        ws = self.layers(self.load_weights(), 8)
+        logging.info("finished partitioning layers weights")
+        self.last_layer(ws)
+        logging.info("finished partitioning last layer weights")
 
 
 if __name__ == "__main__":
@@ -93,4 +96,4 @@ if __name__ == "__main__":
         args.model_path, args.output_path
     )
     weights_partitioner.start()
-
+ 

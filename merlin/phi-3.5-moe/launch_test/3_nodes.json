@@ -18,7 +18,7 @@
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 1,
-            "profile": true,
+            "profile": false,
             "profiling_output": "n46-phi-ep-short-4-1-8"
         },
         "10.10.10.1": {
@@ -28,7 +28,7 @@
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 0,
-            "profile": true,
+            "profile": false,
             "profiling_output": "n51-phi-ep-short-4-1-8"
         },
         "10.10.10.3": {
@@ -38,7 +38,7 @@
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/only_ep.py",
             "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/ep",
             "node_id": 2,
-            "profile": true,
+            "profile": false,
             "profiling_output": "n36-phi-ep-short-4-1-8"
         }
     }
