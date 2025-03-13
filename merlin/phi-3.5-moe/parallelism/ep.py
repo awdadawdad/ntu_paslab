@@ -969,9 +969,10 @@ class PhiMoEDecoderLayer(nn.Module):
         """
 
         residual = hidden_states
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("joe")
         hidden_states = self.input_layernorm(hidden_states)
-
+        
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -982,8 +983,11 @@ class PhiMoEDecoderLayer(nn.Module):
             use_cache=use_cache,
         )
         hidden_states = residual + hidden_states
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
         # Fully Connected
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("gaven")
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.block_sparse_moe(hidden_states)
@@ -997,6 +1001,8 @@ class PhiMoEDecoderLayer(nn.Module):
         if use_cache:
             outputs += (present_key_value,)
 
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
         return outputs
 
