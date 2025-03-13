@@ -54,7 +54,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.utils.import_utils import is_torch_fx_available
-from configuration_phimoe import PhiMoEConfig
+from .configuration_phimoe import PhiMoEConfig
 
 from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
 from transformers import AutoTokenizer
