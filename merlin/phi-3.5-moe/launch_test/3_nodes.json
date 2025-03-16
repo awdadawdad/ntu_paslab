@@ -6,27 +6,27 @@
     "shared_exec_args": {
         "prompt_path": "~/ntu_paslab_llm/mixtral/prompts/diverse_short.json",
         "n_prompts": 4,
-        "batch_size": 1,
-        "max_tokens": 8,
-        "hide_resp":true
+        "batch_size": 2,
+        "max_tokens": 128,
+        "hide_resp":false
     },
     "nodes": {
         "10.10.10.2": {
             "ssh_port": 9046,
             "node_rank": 1,
             "ngpus": 4,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/ep.py",
-            "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/tp.py",
+            "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/tp",
             "node_id": 1,
             "profile": false,
-            "profiling_output": "n46-phi-ep-short-4-1-8"
+            "profiling_output": "n46-phi-ep-short-4-1-8-specific"
         },
         "10.10.10.1": {
             "ssh_port": 9051,
             "node_rank": 0,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/ep.py",
-            "model_path": "/mnt/llm_team/merlin_phi3.5_weights/ep",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/tp.py",
+            "model_path": "/mnt/llm_team/merlin_phi3.5_weights/tp",
             "node_id": 0,
             "profile": false,
             "profiling_output": "n51-phi-ep-short-4-1-8"
@@ -35,8 +35,8 @@
             "ssh_port": 9036,
             "node_rank": 2,
             "ngpus": 2,
-            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/ep.py",
-            "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/ep",
+            "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/tp.py",
+            "model_path": "/mnt/data2/llm_team/merlin_phi3.5_weight/tp",
             "node_id": 2,
             "profile": false,
             "profiling_output": "n36-phi-ep-short-4-1-8"
