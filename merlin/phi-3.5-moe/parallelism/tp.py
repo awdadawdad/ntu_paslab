@@ -1441,7 +1441,7 @@ def main(model_path: str,
         n_repeats = -(n_prompts // -len(dataset))  # ceil division
         prompts = (dataset * n_repeats)[:n_prompts]
     
-    gpu = torch.device(f"cuda:{LOCAL_RANK}")
+    gpu = torch.device(f"cuda:{WORLD_RANK}")
     #print(gpu)
     dist.init_process_group(
         "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu
