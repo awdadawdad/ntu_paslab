@@ -1399,7 +1399,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     @staticmethod
     def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
         configuration = PhiMoEConfig.from_pretrained("microsoft/Phi-3.5-MoE-instruct")
-        print(configuration.num_local_experts)
+        print(configuration.num_local_experts//WORLD_SIZE)
         print(WORLD_RANK)
         #non_experts = torch.load(model_path / "non-experts.pt")
         non_experts = torch.load(
