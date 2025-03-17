@@ -911,7 +911,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         for ei in range(self.num_experts):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
             if torch.numel(batch_idx) > 0:
-                if ei >= (16 // WORLD_SIZE) * WORLD_RANK  and  ei <(WORLD_RANK +1)*(16 // WORLD_SIZE) :
+                if ei >= (self.num_experts// WORLD_SIZE) * WORLD_RANK  and  ei <(WORLD_RANK +1)*(self.num_experts// WORLD_SIZE) :
                     eis.append(ei)
                     bis.append(batch_idx.to(device=hidden_states.device))
                     nes.append(nth_expert.to(device=hidden_states.device))
@@ -1409,7 +1409,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         )
         experts_weights ={}
         
-        for i in range (2* WORLD_RANK ,  (WORLD_RANK +1)*2 ):
+        for i in range ((configuration.num_local_experts//WORLD_RANK)* WORLD_RANK ,  (WORLD_RANK +1)*(configuration.num_local_experts//WORLD_RANK)):
             experts = torch.load(
                 model_path / f"experts-{i}.pt",
                 map_location=gpu,
