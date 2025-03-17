@@ -1400,6 +1400,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
     def load(model_path: Path, gpu: torch.device, group) -> "PhiMoEModel":
         configuration = PhiMoEConfig.from_pretrained("microsoft/Phi-3.5-MoE-instruct")
         print(configuration.num_local_experts)
+        print(WORLD_RANK)
         #non_experts = torch.load(model_path / "non-experts.pt")
         non_experts = torch.load(
             model_path / "non-experts.pt",
@@ -1409,7 +1410,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         )
         experts_weights ={}
         
-        for i in range ((configuration.num_local_experts//WORLD_RANK)* WORLD_RANK ,  (WORLD_RANK +1)*(configuration.num_local_experts//WORLD_RANK)):
+        for i in range ((configuration.num_local_experts//WORLD_SIZE)* WORLD_RANK ,  (WORLD_RANK +1)*(configuration.num_local_experts//WORLD_SIZE)):
             experts = torch.load(
                 model_path / f"experts-{i}.pt",
                 map_location=gpu,
