@@ -1568,7 +1568,7 @@ def main(model_path: str,
             print("=" * 40)   
             if not hide_resp:
                 for i, text in enumerate(decoded_outputs):
-                    print(f"Output {i}:\n\nprompt:\n {prompts[i]}\n\nanswer:\n{text}\n{'='*80}")
+                    print(f"Output {i}:\n\nprompt:\n {prompt_batch[i]}\n\nanswer:\n{text}\n{'='*80}")
             prefill_throughput = batch_size * input_len / prefill_time
             decode_throughput = batch_size * max_tokens / (total_time - prefill_time)
             print(f"prefill throughput: {prefill_throughput}")
