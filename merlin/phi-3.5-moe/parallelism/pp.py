@@ -1150,10 +1150,12 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
                     past_key_values_length,
                     sliding_window=self.config.sliding_window,
                 )
-        #if WORLD_RANK == 0:
+        if WORLD_RANK != 0:
+            shape_tensor = torch.zeros(3, dtype=torch.int, device=torch.cuda.current_device())
+        if WORLD_RANK == 0:
             hidden_states = inputs_embeds
             shape = list(hidden_states.shape)  # [batch_size, seq_len, hidden_dim]
-            shape_tensor = torch.tensor(shape, dtype=torch.long, device=hidden_states.device)
+            shape_tensor = torch.tensor(shape, dtype=torch.int, device=torch.cuda.current_device())
             dist.broadcast(tensor=shape_tensor, src=0)
         # decoder layers
         ''''
@@ -1165,10 +1167,11 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         
 
         if WORLD_RANK != 0:
+            shape_tensor = torch.zeros(3, dtype=torch.int, device=torch.cuda.current_device())
             shape_list = shape_tensor.tolist()  # 变回 Python list
             batch_size, seq_len, hidden_dim = shape_list
             hidden_states = torch.zeros(
-            (batch_size , seq_len, hidden_dim), dtype=shape_tensor.dtype, device=shape_tensor.device())
+            (batch_size , seq_len, hidden_dim), dtype=shape_tensor.dtype, device=torch.cuda.current_device())
             dist.recv(tensor=hidden_states, src = WORLD_RANK-1)
         for decoder_layer in self.layers:
             if output_hidden_states:
