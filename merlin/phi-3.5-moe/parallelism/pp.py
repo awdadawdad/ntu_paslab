@@ -1474,10 +1474,11 @@ def main(model_path: str,
         prompts = (dataset * n_repeats)[:n_prompts]
     
     gpu = torch.device(f"cuda:{LOCAL_RANK}")
+    device = torch.device(f"cuda:{WORLD_RANK}")
     torch.cuda.set_device(gpu)
-    #print(gpu)
+    
     dist.init_process_group(
-        "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu
+        "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=device
     )
     group = dist.new_group(list(range(WORLD_SIZE)), use_local_synchronization=True)
 
