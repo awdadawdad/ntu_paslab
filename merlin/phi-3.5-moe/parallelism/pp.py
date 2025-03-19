@@ -1429,11 +1429,11 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         
         
         model = PhiMoEForCausalLM(configuration, group)
-        model.load_state_dict(weight,  assign=True, strict=True)
+        model.load_state_dict(weight,  assign=True, strict=False)
         if WORLD_RANK == 0:
-            model.load_state_dict(embed_tokens,  assign=True, strict=True)
+            model.load_state_dict(embed_tokens,  assign=True, strict=False)
         if WORLD_RANK == WORLD_SIZE -1:
-            model.load_state_dict(lm_head,  assign=True, strict=True)
+            model.load_state_dict(lm_head,  assign=True, strict=False)
         
   
         return model
