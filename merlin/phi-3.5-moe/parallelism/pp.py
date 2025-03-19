@@ -906,7 +906,7 @@ class PhiMoESparseMoeBlock(nn.Module):
             
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
-        return final_hidden_states, router_logits
+        return final_hidden_states
         '''
         results = torch.zeros_like(hidden_states)
 
