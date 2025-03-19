@@ -1051,7 +1051,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         )
         self._attn_implementation = config._attn_implementation
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
-
+        self.hidden_dim = config.hidden_size
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
@@ -1151,26 +1151,24 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
                     sliding_window=self.config.sliding_window,
                 )
         
-        shape_tensor = torch.zeros(3, dtype=torch.int, device=torch.cuda.current_device())
-        if WORLD_RANK == 0:
-            hidden_states = inputs_embeds
-            shape = list(hidden_states.shape)  # [batch_size, seq_len, hidden_dim]
-            shape_tensor = torch.tensor(shape, dtype=torch.int, device=hidden_states.device)
-        dist.broadcast(tensor=shape_tensor, src=0)
-        # decoder layers
+        hidden_states = torch.zeros(
+            (batch_size , seq_length, self.hidden_dim ), dtype=torch.bfloat16, device=torch.cuda.current_device())
         
+        
+        # decoder layers
+        '''
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         all_router_logits = () if output_router_logits else None
         next_decoder_cache = None
+        '''
         
+        if WORLD_RANK == 0:
+            hidden_states = inputs_embeds
         
-        shape_list = shape_tensor.tolist()
-        batch_size, seq_len, hidden_dim = shape_list
-
         if WORLD_RANK != 0:
             hidden_states = torch.zeros(
-            (batch_size , seq_len, hidden_dim), dtype=shape_tensor.dtype, device=torch.cuda.current_device())
+            (batch_size , seq_length, self.hidden_dim ), dtype=torch.bfloat16, device=torch.cuda.current_device())
             dist.recv(tensor=hidden_states, src = WORLD_RANK-1)
         for decoder_layer in self.layers:
             if output_hidden_states:
