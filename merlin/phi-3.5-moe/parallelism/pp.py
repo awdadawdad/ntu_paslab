@@ -1113,10 +1113,12 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
         else:
             position_ids = position_ids.view(-1, seq_length).long()
+        
 
         if WORLD_RANK == 0:
             if inputs_embeds is None:
                 inputs_embeds = self.embed_tokens(input_ids)
+
 
         if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
@@ -1148,19 +1150,25 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
                 past_key_values_length,
                 sliding_window=self.config.sliding_window,
             )
-
-        hidden_states = inputs_embeds
-
+        if WORLD_RANK == 0:
+            hidden_states = inputs_embeds
+            shape = list(hidden_states.shape)  # [batch_size, seq_len, hidden_dim]
+            shape_tensor = torch.tensor(shape, dtype=torch.long, device=hidden_states.device)
+            dist.broadcast(tensor=shape_tensor, src=0)
         # decoder layers
+        ''''
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         all_router_logits = () if output_router_logits else None
         next_decoder_cache = None
+        '''
         
+
         if WORLD_RANK != 0:
-            batch_size, sequence_length, hidden_dim = hidden_states.shape
+            shape_list = shape_tensor.tolist()  # 变回 Python list
+            batch_size, seq_len, hidden_dim = shape_list
             hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+            (batch_size , seq_len, hidden_dim), dtype=shape_tensor.dtype, device=shape_tensor.device())
             dist.recv(tensor=hidden_states, src = WORLD_RANK-1)
         for decoder_layer in self.layers:
             if output_hidden_states:
@@ -1283,7 +1291,7 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
+        
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_router_logits = (
             output_router_logits if output_router_logits is not None else self.config.output_router_logits
@@ -1307,23 +1315,23 @@ class PhiMoEForCausalLM(PhiMoEPreTrainedModel):
             output_router_logits=output_router_logits,
             return_dict=return_dict,
         )
+        if WORLD_RANK == WORLD_SIZE -1:
 
-        hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
-        logits = logits.float()
+            hidden_states = outputs[0]
+            logits = self.lm_head(hidden_states)
+            logits = logits.float()
 
-        
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return output 
+            if not return_dict:
+                output = (logits,) + outputs[1:]
+                return output 
 
-        return MoeCausalLMOutputWithPast(
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-            router_logits=outputs.router_logits,
-        )
+            return MoeCausalLMOutputWithPast(
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+                router_logits=outputs.router_logits,
+            )
 
     def prepare_inputs_for_generation(
         self,
