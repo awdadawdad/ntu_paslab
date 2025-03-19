@@ -1170,6 +1170,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         if WORLD_RANK != 0:
             hidden_states = torch.zeros(
             (batch_size , seq_length, self.hidden_dim ), dtype=torch.bfloat16, device=torch.cuda.current_device())
+
             dist.recv(tensor=hidden_states, src = WORLD_RANK-1, group = self.group)
         for decoder_layer in self.layers:
             if output_hidden_states:
@@ -1473,6 +1474,7 @@ def main(model_path: str,
         prompts = (dataset * n_repeats)[:n_prompts]
     
     gpu = torch.device(f"cuda:{LOCAL_RANK}")
+    torch.cuda.set_device(gpu)
     #print(gpu)
     dist.init_process_group(
         "nccl", rank=WORLD_RANK, world_size=WORLD_SIZE, device_id=gpu
