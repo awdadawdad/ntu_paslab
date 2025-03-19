@@ -1114,8 +1114,9 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         else:
             position_ids = position_ids.view(-1, seq_length).long()
 
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+        if WORLD_RANK == 0:
+            if inputs_embeds is None:
+                inputs_embeds = self.embed_tokens(input_ids)
 
         if attention_mask is not None and self._attn_implementation == "flash_attention_2" and use_cache:
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
@@ -1155,37 +1156,39 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         all_self_attns = () if output_attentions else None
         all_router_logits = () if output_router_logits else None
         next_decoder_cache = None
-        for rank in range (WORLD_SIZE):
-            if rank == WORLD_RANK :
-                if rank != 0:
-                    dist.recv(tensor=hidden_states, src = rank-1)
-                for decoder_layer in self.layers:
-                    if output_hidden_states:
-                        all_hidden_states += (hidden_states,)
+        
+        if WORLD_RANK != 0:
+            batch_size, sequence_length, hidden_dim = hidden_states.shape
+            hidden_states = torch.zeros(
+            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device)
+            dist.recv(tensor=hidden_states, src = WORLD_RANK-1)
+        for decoder_layer in self.layers:
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
-                    
-                    layer_outputs = decoder_layer(
-                        hidden_states,
-                        attention_mask=attention_mask,
-                        position_ids=position_ids,
-                        past_key_value=past_key_values,
-                        output_attentions=output_attentions,
-                        output_router_logits=output_router_logits,
-                        use_cache=use_cache,
-                    )
+            
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                output_router_logits=output_router_logits,
+                use_cache=use_cache,
+            )
 
-                    hidden_states = layer_outputs[0]
+            hidden_states = layer_outputs[0]
 
-                    if use_cache:
-                        next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            if use_cache:
+                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
-                    if output_attentions:
-                        all_self_attns += (layer_outputs[1],)
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
 
-                    if output_router_logits:
-                        all_router_logits += (layer_outputs[-1],)
-                if rank != WORLD_SIZE -1:
-                    dist.send(tensor=hidden_states, dst = rank+1)
+            if output_router_logits:
+                all_router_logits += (layer_outputs[-1],)
+        if WORLD_RANK != WORLD_SIZE -1:
+            dist.send(hidden_states, dst = WORLD_RANK+1)
 
         if WORLD_RANK == WORLD_SIZE -1:
             hidden_states = self.norm(hidden_states)
