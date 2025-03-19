@@ -1053,6 +1053,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.hidden_dim = config.hidden_size
         self.gradient_checkpointing = False
+        self.group = group
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1169,7 +1170,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
         if WORLD_RANK != 0:
             hidden_states = torch.zeros(
             (batch_size , seq_length, self.hidden_dim ), dtype=torch.bfloat16, device=torch.cuda.current_device())
-            dist.recv(tensor=hidden_states, src = WORLD_RANK-1)
+            dist.recv(tensor=hidden_states, src = WORLD_RANK-1, group = self.group)
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -1196,7 +1197,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             if output_router_logits:
                 all_router_logits += (layer_outputs[-1],)
         if WORLD_RANK != WORLD_SIZE -1:
-            dist.send(hidden_states, dst = WORLD_RANK+1)
+            dist.send(hidden_states, dst = WORLD_RANK+1,group = self.group)
 
         if WORLD_RANK == WORLD_SIZE -1:
             hidden_states = self.norm(hidden_states)
