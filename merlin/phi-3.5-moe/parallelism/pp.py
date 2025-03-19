@@ -845,7 +845,7 @@ class PhiMoESparseMoeBlock(nn.Module):
     and memory on padding.
     """
 
-    def __init__(self, config,  li: int, group):
+    def __init__(self, config, group):
         super().__init__()
         self.hidden_dim = config.hidden_size
         self.ffn_dim = config.intermediate_size
@@ -861,7 +861,6 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         self.router_jitter_noise = config.router_jitter_noise
 
-        self.li = li
 
         self.group = group
         
@@ -936,7 +935,7 @@ class PhiMoEDecoderLayer(nn.Module):
 
         self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
-        self.block_sparse_moe = PhiMoESparseMoeBlock(config, layer_idx, group)
+        self.block_sparse_moe = PhiMoESparseMoeBlock(config, group)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
 
