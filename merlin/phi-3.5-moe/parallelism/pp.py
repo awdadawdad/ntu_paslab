@@ -1187,7 +1187,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             )
 
             hidden_states = layer_outputs[0]
-
+            print(hidden_states)
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
