@@ -990,6 +990,8 @@ class PhiMoEDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.block_sparse_moe(hidden_states)
+        print(residual)
+        print(hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1187,7 +1189,7 @@ class PhiMoEModel(PhiMoEPreTrainedModel):
             )
 
             hidden_states = layer_outputs[0]
-            print(hidden_states)
+            
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
