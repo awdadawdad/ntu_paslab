@@ -868,14 +868,20 @@ class PhiMoESparseMoeBlock(nn.Module):
         torch.cuda.nvtx.range_push("total")
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("gate")
         router_logits = self.gate(hidden_states)
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("sparsemixer")
         routing_weights, selected_experts = sparsemixer(
             router_logits, 
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
         '''
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
@@ -905,8 +911,6 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         return current_hidden_states
         '''
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_push("total_gemm")
         results = torch.zeros_like(hidden_states)
 
         eis, bis, nes = [], [], []
@@ -919,15 +923,17 @@ class PhiMoESparseMoeBlock(nn.Module):
                     nes.append(nth_expert.to(device=hidden_states.device))
 
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("forward")
             ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
             torch.cuda.synchronize()
-            torch.cuda.nvtx.range_push("gemm")
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("expert_weight")
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
             torch.cuda.synchronize()
             torch.cuda.nvtx.range_pop()
         results = results.reshape(batch_size, sequence_length, hidden_dim)
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_pop()
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
