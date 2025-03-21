@@ -864,8 +864,7 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_push("total")
+        orig_shape = hidden_states.shape
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         torch.cuda.synchronize()
@@ -911,41 +910,48 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         return current_hidden_states
         '''
-        results = torch.zeros_like(hidden_states)
+        #results = torch.zeros_like(hidden_states)
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_push("select")
-        eis, bis, nes = [], [], []
-        for ei in range(self.num_experts):
-            batch_idx, nth_expert = torch.where(selected_experts == ei)
-            if torch.numel(batch_idx) > 0:
-                if ei >= (self.num_experts// WORLD_SIZE) * WORLD_RANK  and  ei <(WORLD_RANK +1)*(self.num_experts// WORLD_SIZE) :
-                    eis.append(ei)
-                    bis.append(batch_idx.to(device=hidden_states.device))
-                    nes.append(nth_expert.to(device=hidden_states.device))
-
+        results = self.moe_infer(hidden_states, selected_experts, routing_weights).view(*orig_shape)
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
-
-
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_push("forward")
-        for ei, batch_idx, nth_expert in zip(eis, bis, nes):
-            torch.cuda.synchronize()
-            torch.cuda.nvtx.range_push("expert_weight")
-            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
-            
-            results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
-            torch.cuda.synchronize()
-            torch.cuda.nvtx.range_pop()
-            
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_pop()
-        results = results.reshape(batch_size, sequence_length, hidden_dim)
+    
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_pop()
+
         return results
-        
+    
+
+    @torch.no_grad()
+    def moe_infer(self, x, topk_ids, topk_weight):
+        cnts = topk_ids.new_zeros((topk_ids.shape[0], 8))
+        cnts.scatter_(1, topk_ids, 1)
+        tokens_per_expert = cnts.sum(dim=0).cpu()
+        idxs = topk_ids.view(-1)
+        _, idxs = idxs.sort(dim=-1)
+        sorted_tokens = x[idxs // topk_ids.shape[1]]
+        outputs = []
+        start_idx = 0
+        for i, num_tokens in enumerate(tokens_per_expert):
+            if num_tokens == 0:
+                continue
+            end_idx = start_idx + num_tokens
+            tokens_for_this_expert = sorted_tokens[start_idx:end_idx]
+            expert_out = self.experts.forward(self.li, i, tokens_for_this_expert)
+            outputs.append(expert_out)
+            start_idx = end_idx
+
+        outs = torch.cat(outputs, dim=0) if len(outputs) else sorted_tokens.new_empty(0) # new_empty
+        new_x = torch.empty_like(outs)
+        new_x[idxs] = outs
+        final_out = (
+            new_x.view(*topk_ids.shape, -1)
+            .type(topk_weight.dtype)
+            .mul_(topk_weight.unsqueeze(dim=-1))
+            .sum(dim=1)
+            .type(new_x.dtype)
+        )
+        return final_out
 
 
 class PhiMoEDecoderLayer(nn.Module):
