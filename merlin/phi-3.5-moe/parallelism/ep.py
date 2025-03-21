@@ -864,8 +864,8 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_push("total")
+        #torch.cuda.synchronize()
+        #torch.cuda.nvtx.range_push("total")
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
