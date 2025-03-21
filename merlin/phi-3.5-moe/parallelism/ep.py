@@ -868,10 +868,8 @@ class PhiMoESparseMoeBlock(nn.Module):
         #torch.cuda.nvtx.range_push("total")
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        # router_logits: (batch * sequence_length, n_experts)
         
         router_logits = self.gate(hidden_states)
-        #router_logits = router_logits[:, :12]
 
         routing_weights, selected_experts = sparsemixer(
             router_logits, 
