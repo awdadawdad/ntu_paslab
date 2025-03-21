@@ -912,7 +912,8 @@ class PhiMoESparseMoeBlock(nn.Module):
         return current_hidden_states
         '''
         results = torch.zeros_like(hidden_states)
-
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("select")
         eis, bis, nes = [], [], []
         for ei in range(self.num_experts):
             batch_idx, nth_expert = torch.where(selected_experts == ei)
@@ -922,17 +923,23 @@ class PhiMoESparseMoeBlock(nn.Module):
                     bis.append(batch_idx.to(device=hidden_states.device))
                     nes.append(nth_expert.to(device=hidden_states.device))
 
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
+
+
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("forward")
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
             torch.cuda.synchronize()
-            torch.cuda.nvtx.range_push("forward")
-            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
-            torch.cuda.synchronize()
-            torch.cuda.nvtx.range_pop()
-            torch.cuda.synchronize()
             torch.cuda.nvtx.range_push("expert_weight")
+            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
+            
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
             torch.cuda.synchronize()
             torch.cuda.nvtx.range_pop()
+            
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
         results = results.reshape(batch_size, sequence_length, hidden_dim)
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
         torch.cuda.synchronize()
