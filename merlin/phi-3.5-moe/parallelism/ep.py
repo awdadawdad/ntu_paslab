@@ -877,7 +877,7 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
-        
+        '''
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -906,6 +906,8 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         return current_hidden_states
         '''
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push("total")
         results = torch.zeros_like(hidden_states)
 
         eis, bis, nes = [], [], []
@@ -919,11 +921,17 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         for ei, batch_idx, nth_expert in zip(eis, bis, nes):
             ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("gemm")
             results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
         results = results.reshape(batch_size, sequence_length, hidden_dim)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
         dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
         return results
-        '''
+        
 
 
 class PhiMoEDecoderLayer(nn.Module):
