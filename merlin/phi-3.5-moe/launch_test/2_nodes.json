@@ -5,8 +5,8 @@
     "username":"gaven",
     "shared_exec_args": {
         "prompt_path": "~/ntu_paslab_llm/mixtral/prompts/diverse_short.json",
-        "n_prompts": 128,
-        "batch_size": 64,
+        "n_prompts": 4,
+        "batch_size": 2,
         "max_tokens": 128,
         "hide_resp": false
     },
@@ -28,7 +28,7 @@
             "script": "~/ntu_paslab/merlin/phi-3.5-moe/parallelism/ep.py",
             "model_path": "/mnt/disk2/llm_team/merlin_phi3.5_weights/ep",
             "node_id": 1,
-	    "profile" : false,
+	    "profile" : true,
 	    "profiling_output":"n46-pp-long-4-2-128"
         }
     }
