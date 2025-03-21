@@ -864,9 +864,10 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        orig_shape = hidden_states.shape
+        #orig_shape = hidden_states.shape
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
+        orig_shape = hidden_states.shape
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_push("gate")
         router_logits = self.gate(hidden_states)
