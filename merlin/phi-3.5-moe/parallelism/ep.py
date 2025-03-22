@@ -867,7 +867,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         #orig_shape = hidden_states.shape
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        orig_shape = hidden_states.shape
+        #orig_shape = hidden_states.shape
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_push("gate")
         router_logits = self.gate(hidden_states)
@@ -882,7 +882,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         )
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
-        '''
+        
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -903,10 +903,10 @@ class PhiMoESparseMoeBlock(nn.Module):
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
 
             current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
-            current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-            dist.all_reduce(current_hidden_states, op=dist.ReduceOp.SUM, group=self.group)
+            #current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        dist.all_reduce(current_hidden_states, op=dist.ReduceOp.SUM, group=self.group)
             #final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-            
+        current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)    
         #final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
         return current_hidden_states
@@ -954,7 +954,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         )
         return final_out
 
-
+        '''
 class PhiMoEDecoderLayer(nn.Module):
     def __init__(self, config: PhiMoEConfig, layer_idx: int, ws, group):
         super().__init__()
