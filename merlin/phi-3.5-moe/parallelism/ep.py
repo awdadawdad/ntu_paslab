@@ -889,13 +889,14 @@ class PhiMoESparseMoeBlock(nn.Module):
 
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
 
-        for expert_idx in range(self.num_experts):
+        for expert_idx in range((self.num_experts // WORLD_SIZE) * WORLD_RANK, (WORLD_RANK +1)*(self.num_experts  // WORLD_SIZE)):
+            
             expert_layer = self.experts[expert_idx]
             idx, top_x = torch.where(expert_mask[expert_idx])
 
             if top_x.shape[0] == 0:
                 continue
-
+            
             # in torch it is faster to index using lists than torch tensors
             top_x_list = top_x.tolist()
             idx_list = idx.tolist()
@@ -904,12 +905,12 @@ class PhiMoESparseMoeBlock(nn.Module):
 
             current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
             #current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-        dist.all_reduce(current_hidden_states, op=dist.ReduceOp.SUM, group=self.group)
-            #final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-        current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)    
-        #final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-
-        return current_hidden_states
+            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+                
+        dist.all_reduce(final_hidden_states, op=dist.ReduceOp.SUM, group=self.group)          
+        final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)    
+        return final_hidden_states
+        
         '''
         #results = torch.zeros_like(hidden_states)
         torch.cuda.synchronize()
@@ -955,6 +956,27 @@ class PhiMoESparseMoeBlock(nn.Module):
         return final_out
 
         '''
+
+        results = torch.zeros_like(hidden_states)
+
+        eis, bis, nes = [], [], []
+        for ei in range(self.num_experts):
+            batch_idx, nth_expert = torch.where(selected_experts == ei)
+            if torch.numel(batch_idx) > 0:
+                #if ei >= (16 // WORLD_SIZE) * WORLD_RANK  and  ei <(WORLD_RANK +1)*(16 // WORLD_SIZE) :
+                    eis.append(ei)
+                    bis.append(batch_idx.to(device=hidden_states.device))
+                    nes.append(nth_expert.to(device=hidden_states.device))
+
+        for ei, batch_idx, nth_expert in zip(eis, bis, nes):
+            ey = self.experts[ei].forward(hidden_states[batch_idx],self.li, ei)
+            results[batch_idx] += routing_weights[batch_idx, nth_expert, None] * ey
+        results = results.reshape(batch_size, sequence_length, hidden_dim)
+        print(results.shape)
+        dist.all_reduce(results, op=dist.ReduceOp.SUM, group=self.group)
+        return results
+    
+
 class PhiMoEDecoderLayer(nn.Module):
     def __init__(self, config: PhiMoEConfig, layer_idx: int, ws, group):
         super().__init__()
