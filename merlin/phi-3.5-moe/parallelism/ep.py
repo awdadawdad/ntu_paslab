@@ -20,6 +20,7 @@ import warnings
 from typing import List, Optional, Tuple, Union
 import argparse
 from statistics import mean
+import numpy
 
 import torch
 import torch.nn.functional as F
@@ -882,7 +883,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         )
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
-        
+        '''
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -902,8 +903,11 @@ class PhiMoESparseMoeBlock(nn.Module):
             idx_list = idx.tolist()
 
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_push("COMPUTE")
             current_hidden_states = expert_layer(current_state, self.li, expert_idx) * routing_weights[top_x_list, idx_list, None]
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
             #current_hidden_states = current_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
                 
@@ -924,38 +928,50 @@ class PhiMoESparseMoeBlock(nn.Module):
         return results
     
 
-    @torch.no_grad()
     def moe_infer(self, x, topk_ids, topk_weight):
-        cnts = topk_ids.new_zeros((topk_ids.shape[0], 8))
-        cnts.scatter_(1, topk_ids, 1)
-        tokens_per_expert = cnts.sum(dim=0).cpu()
-        idxs = topk_ids.view(-1)
-        _, idxs = idxs.sort(dim=-1)
-        sorted_tokens = x[idxs // topk_ids.shape[1]]
+        cnts = topk_ids.new_zeros((topk_ids.shape[0], self.num_experts))
+        cnts = cnts.scatter_(1, topk_ids, 1).sum(dim=0)
+        cnts = cnts.cpu().numpy()
+        tokens_per_expert = (
+            cnts[(self.num_experts // WORLD_SIZE) * WORLD_RANK : (WORLD_RANK +1)*(self.num_experts  // WORLD_SIZE)]
+        )
+        # for fidx
+        cnts = numpy.insert(cnts, 0, 0)
+        
+        # prefix sum numpy version
+        for i in range(1, cnts.shape[0]):
+            cnts[i] += cnts[i - 1]
+        fidx = cnts[self.expert_start_idx]
+        bidx = cnts[self.expert_end_idx]
+        
+        # get token position
+        idxs = topk_ids.view(-1).argsort()
+        token_idxs = idxs[fidx:bidx] // topk_ids.shape[1]
+        sorted_tokens = x[token_idxs]
+
         outputs = []
         start_idx = 0
+        # only do deployed expert -> no redundent
         for i, num_tokens in enumerate(tokens_per_expert):
-            if num_tokens == 0:
+            if num_tokens == 0: 
                 continue
             end_idx = start_idx + num_tokens
             tokens_for_this_expert = sorted_tokens[start_idx:end_idx]
-            expert_out = self.experts.forward(self.li, i, tokens_for_this_expert)
+            expert_out = self.experts.forward(self.li, i + self.expert_start_idx, tokens_for_this_expert)
             outputs.append(expert_out)
             start_idx = end_idx
 
-        outs = torch.cat(outputs, dim=0) if len(outputs) else sorted_tokens.new_empty(0) # new_empty
-        new_x = torch.empty_like(outs)
-        new_x[idxs] = outs
-        final_out = (
-            new_x.view(*topk_ids.shape, -1)
-            .type(topk_weight.dtype)
-            .mul_(topk_weight.unsqueeze(dim=-1))
-            .sum(dim=1)
-            .type(new_x.dtype)
-        )
-        return final_out
+        if len(outputs):
+            outs = torch.cat(outputs, dim=0)
+            new_x = torch.zeros_like(x)
+            outs = outs.mul_(topk_weight.view(-1)[idxs[fidx:bidx]].unsqueeze(dim=-1))
+            return new_x.scatter_reduce_(
+                0, token_idxs.unsqueeze(-1).expand(-1, x.shape[-1]), outs, reduce="sum"
+            )
+        else:
+            return torch.zeros_like(x)
 
-        '''
+        
 
         results = torch.zeros_like(hidden_states)
 
