@@ -142,7 +142,7 @@ class PhiMoERotaryEmbedding(nn.Module):
             self.sin_cached[:seq_len].to(dtype=x.dtype),
         )
 
-'''
+
 class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
 
     def __init__(self, dim, config):
@@ -177,7 +177,7 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(x.dtype)
 
-'''
+
 # Copied from transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
