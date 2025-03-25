@@ -883,7 +883,7 @@ class PhiMoESparseMoeBlock(nn.Module):
         )
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
-        '''
+        
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -971,8 +971,8 @@ class PhiMoESparseMoeBlock(nn.Module):
         else:
             return torch.zeros_like(x)
 
+        '''
         
-
         results = torch.zeros_like(hidden_states)
 
         eis, bis, nes = [], [], []
@@ -997,8 +997,8 @@ class PhiMoEDecoderLayer(nn.Module):
     def __init__(self, config: PhiMoEConfig, layer_idx: int, ws, group):
         super().__init__()
         self.hidden_size = config.hidden_size
-
-        self.self_attn = PHIMOE_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
+        #config._attn_implementation = "flash_attention_2"
+        self.self_attn = PHIMOE_ATTENTION_CLASSES["flash_attention_2"](config, layer_idx)
 
         self.block_sparse_moe = PhiMoESparseMoeBlock(config, layer_idx, ws, group)
         self.input_layernorm = nn.LayerNorm(config.hidden_size, eps=config.rms_norm_eps, elementwise_affine=True)
