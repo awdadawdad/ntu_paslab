@@ -223,6 +223,7 @@ class PhiMoEAttention(nn.Module):
             self.head_dim,
             max_position_embeddings=self.max_position_embeddings,
             base=self.rope_theta,
+            device=torch.cuda.current_device()
         )
         
 
