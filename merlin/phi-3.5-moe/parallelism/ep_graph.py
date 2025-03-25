@@ -87,19 +87,6 @@ WORLD_RANK = int(os.environ["RANK"])
 def get_json(file_path: Path) -> dict:
     with open(file_path, "r") as f:
         return json.load(f)
-'''
-# Copied from transformers.models.llama.modeling_llama._get_unpad_data
-def _get_unpad_data(attention_mask):
-    seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
-    indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
-    max_seqlen_in_batch = seqlens_in_batch.max().item()
-    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
-    return (
-        indices,
-        cu_seqlens,
-        max_seqlen_in_batch,
-    )
-'''
 
 # Copied from transformers.models.llama.modeling_llama.LlamaRMSNorm with Llama->PhiMoE
 ##https://dl.acm.org/doi/pdf/10.5555/3454287.3455397 The following is the implementation of layernorm
@@ -272,10 +259,7 @@ class PhiMoEAttention(nn.Module):
             )
         else:
             scaling_type = self.config.rope_scaling["type"]
-            if scaling_type == "longrope":
-                self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(self.head_dim, self.config)
-            else:
-                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
+            
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
