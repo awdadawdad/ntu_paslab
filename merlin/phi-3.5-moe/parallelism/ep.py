@@ -88,6 +88,7 @@ def get_json(file_path: Path) -> dict:
     with open(file_path, "r") as f:
         return json.load(f)
 
+'''
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
@@ -100,6 +101,7 @@ def _get_unpad_data(attention_mask):
         max_seqlen_in_batch,
     )
 
+'''
 
 # Copied from transformers.models.llama.modeling_llama.LlamaRMSNorm with Llama->PhiMoE
 ##https://dl.acm.org/doi/pdf/10.5555/3454287.3455397 The following is the implementation of layernorm
@@ -140,7 +142,7 @@ class PhiMoERotaryEmbedding(nn.Module):
             self.sin_cached[:seq_len].to(dtype=x.dtype),
         )
 
-
+'''
 class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
 
     def __init__(self, dim, config):
@@ -175,7 +177,7 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(x.dtype)
 
-
+'''
 # Copied from transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
@@ -1536,7 +1538,7 @@ def main(model_path: str,
     # warm up start
     warmup_prompt = ["what do i do if i stepped in dog poo?",
                      "hello",
-                     "how are you"
+                     "how are you",
                      "how is weather"]
     warmup_inputs = tokenizer(warmup_prompt, return_tensors="pt",  padding=True, truncation=True).to(gpu)
     print(warmup_inputs)
