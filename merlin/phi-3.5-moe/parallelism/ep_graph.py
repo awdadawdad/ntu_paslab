@@ -127,7 +127,39 @@ class PhiMoERotaryEmbedding(nn.Module):
             self.sin_cached[:seq_len].to(dtype=x.dtype),
         )
 
+class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
 
+    def __init__(self, dim, config):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = config.max_position_embeddings
+        self.base = config.rope_theta
+        self.short_factor = config.rope_scaling["short_factor"]
+        self.long_factor = config.rope_scaling["long_factor"]
+        self.short_mscale = config.rope_scaling["short_mscale"]
+        self.long_mscale = config.rope_scaling["long_mscale"]
+        self.original_max_position_embeddings = config.rope_scaling["original_max_position_embeddings"]
+
+    def forward(self, x, seq_len=None):
+        if seq_len is None:
+            seq_len = x.shape[-2]
+
+        if seq_len > self.original_max_position_embeddings:
+            rescale_factors = torch.tensor(self.long_factor, dtype=torch.float32, device=x.device)
+            mscale = self.long_mscale
+        else:
+            rescale_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=x.device)
+            mscale = self.short_mscale
+        assert rescale_factors.shape == (self.dim // 2, ), \
+            f"misaligned shape for LongRoPE rescale factors: {rescale_factors.shape}"
+
+        inv_freq = 1.0 / (rescale_factors * (self.base ** (torch.arange(0, self.dim, 2).float().to(x.device) / self.dim)))
+
+        t = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        freqs = torch.outer(t, inv_freq)
+
+        emb = torch.cat((freqs, freqs), dim=-1)
+        return (emb.cos() * mscale).to(x.dtype), (emb.sin() * mscale).to(x.dtype)
 
 # Copied from transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
@@ -219,12 +251,7 @@ class PhiMoEAttention(nn.Module):
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=self.config.attention_bias)
 
         
-        self.rotary_emb = PhiMoERotaryEmbedding(
-            self.head_dim,
-            max_position_embeddings=self.max_position_embeddings,
-            base=self.rope_theta,
-            device=torch.cuda.current_device()
-        )
+        self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(self.head_dim, self.config)
         
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
