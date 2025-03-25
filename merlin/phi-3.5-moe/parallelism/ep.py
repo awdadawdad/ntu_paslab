@@ -265,12 +265,7 @@ class PhiMoEAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=self.config.attention_bias)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=self.config.attention_bias)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=self.config.attention_bias)
-        
-        self.rotary_emb = PhiMoERotaryEmbedding(
-                self.head_dim,
-                max_position_embeddings=self.max_position_embeddings,
-                base=self.rope_theta,)
-        '''
+       
         if getattr(config, 'rope_scaling', None) is None:
             self.rotary_emb = PhiMoERotaryEmbedding(
                 self.head_dim,
@@ -283,7 +278,7 @@ class PhiMoEAttention(nn.Module):
                 self.rotary_emb = Phi3LongRoPEScaledRotaryEmbedding(self.head_dim, self.config)
             else:
                 raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-        '''
+        
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
