@@ -1539,6 +1539,7 @@ def main(model_path: str,
                      "how are you"
                      "how is weather"]
     warmup_inputs = tokenizer(warmup_prompt, return_tensors="pt",  padding=True, truncation=True).to(gpu)
+    print(warmup_inputs)
     warmup_generate_ids = model.generate(warmup_inputs.input_ids, max_new_tokens = max_tokens)
     # warm up end
 
@@ -1581,6 +1582,7 @@ def main(model_path: str,
         prompt_batch = prompts[start:end]
 
         inputs = tokenizer(prompt_batch, return_tensors="pt", padding=True, truncation=True).to(gpu)
+
         input_len = inputs.input_ids.shape[-1]
         assert batch_size == inputs.input_ids.shape[0]
         torch.cuda.synchronize()
