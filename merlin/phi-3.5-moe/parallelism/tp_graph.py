@@ -74,7 +74,8 @@ class ModelArgs:
             n_kv_heads=params["num_key_value_heads"],
             norm_eps=params["rms_norm_eps"],
             vocab_size=params["vocab_size"],
-            rope_theta=params["rope_theta"],    
+            rope_theta=params["rope_theta"],  
+            max_position_embeddings=params["max_position_embeddings"],  
             moe={
                 "num_experts_per_tok": params["num_experts_per_tok"],
                 "num_experts": params["num_local_experts"],
