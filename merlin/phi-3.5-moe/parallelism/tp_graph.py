@@ -62,11 +62,17 @@ class ModelArgs:
     rope_theta: float
     moe: dict
     max_position_embeddings: int
+    short_factor :float
+    long_factor :float
+    short_mscale :float
+    long_mscale :float
+    original_max_position_embeddings :float
     attn_tp: bool = False
     
 
     @classmethod
     def from_hf_config(cls, params: dict):
+        rope_scaling = params["rope_scaling"]
         return cls(
             dim=params["hidden_size"],
             n_layers=params["num_hidden_layers"],
@@ -78,6 +84,11 @@ class ModelArgs:
             vocab_size=params["vocab_size"],
             rope_theta=params["rope_theta"],  
             max_position_embeddings=params["max_position_embeddings"],  
+            short_factor = rope_scaling["short_factor"],
+            long_factor = rope_scaling["long_factor"],
+            short_mscale = rope_scaling["short_mscale"],
+            long_mscale = rope_scaling["long_mscale"],
+            original_max_position_embeddings = rope_scaling["original_max_position_embeddings"],
             moe={
                 "num_experts_per_tok": params["num_experts_per_tok"],
                 "num_experts": params["num_local_experts"],
@@ -91,11 +102,11 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         self.dim = dim
         self.max_position_embeddings = args.max_position_embeddings
         self.base = args.rope_theta
-        self.short_factor = args.rope_scaling["short_factor"]
-        self.long_factor = args.rope_scaling["long_factor"]
-        self.short_mscale = args.rope_scaling["short_mscale"]
-        self.long_mscale = args.rope_scaling["long_mscale"]
-        self.original_max_position_embeddings = args.rope_scaling["original_max_position_embeddings"]
+        self.short_factor = args.short_factor
+        self.long_factor = args.long_factor
+        self.short_mscale = args.short_mscale
+        self.long_mscale = args.long_mscale
+        self.original_max_position_embeddings = args.original_max_position_embeddings
 
         rescale_factors = torch.tensor(self.short_factor, dtype=torch.float32, device=device)
         
