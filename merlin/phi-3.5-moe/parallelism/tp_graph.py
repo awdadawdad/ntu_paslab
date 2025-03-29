@@ -62,6 +62,7 @@ class ModelArgs:
     rope_theta: float
     moe: dict
     attn_tp: bool = False
+    max_position_embeddings: int
 
     @classmethod
     def from_hf_config(cls, params: dict):
