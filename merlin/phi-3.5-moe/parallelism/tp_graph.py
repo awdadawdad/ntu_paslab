@@ -651,7 +651,7 @@ class Phi3MoE:
         with torch.device("meta"):
             model = Transformer(model_args, Experts(experts), local_group)
         model.load_state_dict(non_experts, assign=True, strict=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3.5-moe-instruct")
 
         return Phi3MoE(model, tokenizer)
 
