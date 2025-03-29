@@ -620,7 +620,7 @@ class Phi3MoE:
         # WARNING: assumes that attention is intra-node parallel
         # TODO: adjust for pipeline parallelism
         if (
-            non_experts[f"model.layers.0.attention.q_proj.weight"].shape[0]
+            non_experts[f"layers.0.attention.q_proj.weight"].shape[0]
             < model_args.n_heads * model_args.head_dim
         ):
             assert model_args.n_heads % LOCAL_WORLD_SIZE == 0
