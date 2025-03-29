@@ -307,18 +307,18 @@ class MoeLayer(nn.Module):
         )
 
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+# class RMSNorm(torch.nn.Module):
+#     def __init__(self, dim: int, eps: float = 1e-6):
+#         super().__init__()
+#         self.eps = eps
+#         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+#     def _norm(self, x: torch.Tensor) -> torch.Tensor:
+#         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         output = self._norm(x.float()).type_as(x)
+#         return output * self.weight
 
 
 class TransformerBlock(nn.Module):
@@ -326,8 +326,8 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.local_group = local_group
         self.attention = Attention(args, li)
-        self.attention_norm = nn.LayerNorm(args.hidden_size, eps=args.rms_norm_eps, elementwise_affine=True)
-        self.ffn_norm = nn.LayerNorm(args.hidden_size, eps=args.rms_norm_eps, elementwise_affine=True)
+        self.attention_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, elementwise_affine=True)
+        self.ffn_norm = nn.LayerNorm(args.dim, eps=args.norm_eps, elementwise_affine=True)
         self.feed_forward = MoeLayer(
             args=args,
             li=li,
@@ -455,7 +455,7 @@ class Transformer(nn.Module):
             args.vocab_size,
             args.dim // LOCAL_WORLD_SIZE if args.attn_tp else args.dim,
         )
-        self.norm = nn.LayerNorm(args.hidden_size, eps=args.rms_norm_eps, elementwise_affine=True)
+        self.norm = nn.LayerNorm(args.dim, eps=args.norm_eps, elementwise_affine=True)
         self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
         self.layers = nn.ModuleDict(
             {
