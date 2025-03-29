@@ -26,12 +26,12 @@ pipe = pipeline(
 )
 
 generation_args = {
-    "max_new_tokens": 2,
+    "max_new_tokens": 128,
     "return_full_text": False,
     "temperature": 0.0,
     "do_sample": False,
 }
 
-output = pipe(prompt, batch_size= 4,**generation_args)
+output = pipe(prompt, batch_size= 1,**generation_args)
 
 print(output)

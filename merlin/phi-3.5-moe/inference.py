@@ -862,8 +862,7 @@ class PhiMoESparseMoeBlock(nn.Module):
             top_k=2,
             jitter_eps=self.router_jitter_noise,  
         )
-        print(routing_weights.shape)
-        print(selected_experts.shape)
+        
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
@@ -889,15 +888,15 @@ class PhiMoESparseMoeBlock(nn.Module):
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x_list].reshape(-1, hidden_dim)
-            print("1",current_state.shape)
+            
             current_hidden_states = expert_layer(current_state) * routing_weights[top_x_list, idx_list, None]
-            print("2",current_hidden_states.shape)
+            
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-            print("3",current_hidden_states.shape)
+           
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-        print(final_hidden_states.shape)
+        
         return final_hidden_states, router_logits
 
 
