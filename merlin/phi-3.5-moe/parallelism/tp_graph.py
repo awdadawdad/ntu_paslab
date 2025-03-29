@@ -61,8 +61,9 @@ class ModelArgs:
     vocab_size: int
     rope_theta: float
     moe: dict
-    attn_tp: bool = False
     max_position_embeddings: int
+    attn_tp: bool = False
+    
 
     @classmethod
     def from_hf_config(cls, params: dict):
