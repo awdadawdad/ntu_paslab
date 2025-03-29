@@ -716,7 +716,7 @@ class Phi3MoE:
         profile: bool = False,
     ) -> tuple[list[str], int, float, int, float]:
 
-        encoded_prompts = self.encode_prompts(prompts)
+        encoded_prompts = self.encode_prompts(prompts, device)
         min_p_len = min(len(p) for p in encoded_prompts)
         max_p_len = max(len(p) for p in encoded_prompts)
         max_seq_len = max_p_len + max_gen_len
