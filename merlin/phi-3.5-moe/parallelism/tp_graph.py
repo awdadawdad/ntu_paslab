@@ -345,7 +345,7 @@ class TransformerBlock(nn.Module):
         self.feed_forward = MoeLayer(
             args=args,
             li=li,
-            gate=nn.Linear(args.dim, args.moe["num_experts"], bias=False),
+            gate=nn.Linear(args.dim, args.moe["num_experts"], bias=True),
             experts=experts,
         )
         self.prefill_graph = None
@@ -470,7 +470,7 @@ class Transformer(nn.Module):
             args.dim // LOCAL_WORLD_SIZE if args.attn_tp else args.dim,
         )
         self.norm = nn.LayerNorm(args.dim, eps=args.norm_eps, elementwise_affine=True)
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
+        self.output = nn.Linear(args.dim, args.vocab_size, bias=True)
         self.layers = nn.ModuleDict(
             {
                 str(li): TransformerBlock(args, li, experts, local_group)
