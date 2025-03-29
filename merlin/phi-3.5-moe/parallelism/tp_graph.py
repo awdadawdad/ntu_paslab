@@ -593,7 +593,7 @@ class Phi3MoE:
     @staticmethod
     def build(model_path: str, node_id: int, device: torch.device) -> "Phi3MoE":
         model_path = Path(model_path)
-        non_experts_filename = "non-experts.pt"
+        non_experts_filename = "non-experts-rename.pt"
         if not (model_path / non_experts_filename).is_file():
             non_experts_filename = f"non-experts-{node_id}-{LOCAL_RANK}.pt"
         experts_filename = f"experts-{WORLD_RANK}.pt"
