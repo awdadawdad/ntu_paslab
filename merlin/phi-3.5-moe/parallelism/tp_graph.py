@@ -345,7 +345,7 @@ class TransformerBlock(nn.Module):
         self.feed_forward = MoeLayer(
             args=args,
             li=li,
-            gate=nn.Linear(args.dim, args.moe["num_experts"], bias=True),
+            gate=nn.Linear(args.dim, args.moe["num_experts"], bias=False),
             experts=experts,
         )
         self.prefill_graph = None
