@@ -113,7 +113,7 @@ class Phi3LongRoPEScaledRotaryEmbedding(nn.Module):
         # assert rescale_factors.shape == (self.dim // 2, ), \
         #     f"misaligned shape for LongRoPE rescale factors: {rescale_factors.shape}"
 
-        inv_freq = 1.0 / (rescale_factors * (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim)))
+        inv_freq = 1.0 / (rescale_factors * (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float, device=device)/ self.dim)))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(
