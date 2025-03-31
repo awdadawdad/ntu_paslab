@@ -259,9 +259,9 @@ class Experts:
         self.ws: dict[str, torch.Tensor] = ws
 
     def forward(self, li: int, ei: int, x: torch.Tensor) -> torch.Tensor:
-        w1: torch.Tensor = self.ws[f"layers.{li}.expert.{ei}.w1"].T
-        w2: torch.Tensor = self.ws[f"layers.{li}.expert.{ei}.w2"].T
-        w3: torch.Tensor = self.ws[f"layers.{li}.expert.{ei}.w3"].T
+        w1: torch.Tensor = self.ws[f"layer.{li}.expert.{ei}.w1"].T
+        w2: torch.Tensor = self.ws[f"layer.{li}.expert.{ei}.w2"].T
+        w3: torch.Tensor = self.ws[f"layer.{li}.expert.{ei}.w3"].T
         return (nn.functional.silu(x @ w1) * (x @ w3)) @ w2
 
 
