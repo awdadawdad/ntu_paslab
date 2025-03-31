@@ -799,7 +799,7 @@ class Phi3MoE:
                 input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
             )
             tokens[:, cur_pos] = next_token
-            eos_reached |= (~input_text_mask[:, cur_pos]) & next_token == eos_id
+            eos_reached |= ~input_text_mask[:, cur_pos] & (next_token == self.tokenizer.eos_token_id)
 
             prev_pos = cur_pos
             if all(eos_reached):
