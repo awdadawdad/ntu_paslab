@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import time
+import termcolor
 
 from torch import nn
 import torch.distributed as dist
