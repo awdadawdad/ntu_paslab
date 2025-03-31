@@ -479,6 +479,7 @@ class Transformer(nn.Module):
         )
         self.lli = str(args.n_layers - 1)  # for convenience
 
+
     @property
     def dtype(self) -> torch.dtype:
         return next(self.parameters()).dtype
@@ -716,13 +717,19 @@ class Phi3MoE:
         profile: bool = False,
     ) -> tuple[list[str], int, float, int, float]:
 
-        encoded_prompts = self.encode_prompts(prompts, device)
-        min_p_len = min(len(p) for p in encoded_prompts)
-        max_p_len = max(len(p) for p in encoded_prompts)
+        encoded_prompts: list[torch.Tensor] = self.encode_prompts(prompts, device)
+        min_p_len = min(p.size(dim=0) for p in encoded_prompts)
+        max_p_len = max(p.size(dim=0) for p in encoded_prompts)
         max_seq_len = max_p_len + max_gen_len
         bsz = len(encoded_prompts)
-        pad_id = max(tkn for p in encoded_prompts for tkn in p) + 1
-        eos_id = self.tokenizer.instruct_tokenizer.tokenizer.eos_id
+         
+        # encoded_prompts = self.encode_prompts(prompts, device)
+        # min_p_len = min(len(p) for p in encoded_prompts)
+        # max_p_len = max(len(p) for p in encoded_prompts)
+        # max_seq_len = max_p_len + max_gen_len
+        # bsz = len(encoded_prompts)
+        # pad_id = max(tkn for p in encoded_prompts for tkn in p) + 1
+        # eos_id = self.tokenizer.instruct_tokenizer.tokenizer.eos_id
 
         model = self.model.eval()
         
@@ -742,8 +749,7 @@ class Phi3MoE:
 
         # warmup
         model.forward(
-            torch.ones((bsz, min_p_len), dtype=torch.long, device=device), True
-        )
+            torch.ones((bsz, min_p_len), dtype=torch.long, device=device), True)
         model.forward(torch.ones((bsz, 1), dtype=torch.long, device=device), False)
         self.clear_cache(cache)
 
@@ -754,13 +760,16 @@ class Phi3MoE:
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
 
-        tokens = torch.full((bsz, max_seq_len), pad_id, dtype=torch.long, device=device)
+        tokens = torch.full((bsz, max_seq_len), self.tokenizer.pad_token_id, dtype=torch.long, device=device)
+
         for k, t in enumerate(encoded_prompts):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
+            #tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device=device)
+            tokens[k, : t.size(dim=0)] = t
 
         prev_pos = 0
         eos_reached = torch.tensor([False] * bsz, device=device)
-        input_text_mask = tokens != pad_id
+        input_text_mask = tokens != self.tokenizer.pad_token_id
+
 
         # notice:
         # 1. it seems that prompts with length < max will generate
@@ -771,15 +780,14 @@ class Phi3MoE:
         for cur_pos in range(min_p_len, max_seq_len):
             dist.barrier()
             if prev_pos > 0:
-                idx = torch.arange(prev_pos, cur_pos, dtype=torch.long, device=device)
-                d_store_idx.copy_(idx)
-                logits = model.decode_forward_graph(tokens[:, prev_pos:cur_pos])
-            else:
-                logits = model.prefill_forward_graph(tokens[:, prev_pos:cur_pos])
-                torch.cuda.synchronize()
+                d_store_idx.copy_(
+                    torch.arange(prev_pos, cur_pos, dtype=torch.long, device=device)
+                )
+            logits = model.forward(tokens[:, prev_pos:cur_pos], prev_pos == 0)
+
+            if cur_pos == min_p_len:
                 prefill_time = time.time() - tic
                 tic = time.time()
-
             if temperature > 0:
                 probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
                 next_token = sample_top_p(probs, 0.8)
@@ -792,7 +800,7 @@ class Phi3MoE:
                 input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
             )
             tokens[:, cur_pos] = next_token
-            eos_reached |= ~input_text_mask[:, cur_pos] & (next_token == self.tokenizer.eos_token_id)
+            eos_reached |= (~input_text_mask[:, cur_pos]) & next_token == eos_id
 
             prev_pos = cur_pos
             if all(eos_reached):
