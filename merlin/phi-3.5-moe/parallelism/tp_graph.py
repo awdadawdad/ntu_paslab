@@ -490,7 +490,6 @@ class Transformer(nn.Module):
 
     def set_batch_level_args(
         self,
-        freqs_cis: torch.Tensor,
         cache: torch.Tensor,
         mask: torch.Tensor,
         prefill_storage_idx: torch.Tensor,
@@ -498,7 +497,7 @@ class Transformer(nn.Module):
     ):
         for li in range(self.args.n_layers):
             self.layers[str(li)].attention.set_batch_level_args(
-                freqs_cis, cache, mask, prefill_storage_idx, decode_storage_idx
+                cache, mask, prefill_storage_idx, decode_storage_idx
             )
 
     def get_callables(
