@@ -580,7 +580,7 @@ class Transformer(nn.Module):
         during_prefill: bool,
     ):
         args = self.layers["0"].first_forward(
-            self.tok_embeddings(tokens), during_prefill
+            self.embed_tokens(tokens), during_prefill
         )
         for li in range(1, self.args.n_layers - 1):
             args = self.layers[str(li)].middle_forward(*args, during_prefill)
