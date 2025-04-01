@@ -881,9 +881,9 @@ def main(
         if WORLD_RANK == 0:
             prefill_tp = n_p_tkns / prefill_time
             decode_tp = n_gen_tkns / decode_time
-            if n_gen_tkns / bsz > max_gen_len * 0.9:
-                prefill_tps.append(prefill_tp)
-                decode_tps.append(decode_tp)
+            #if n_gen_tkns / bsz > max_gen_len * 0.9:
+            prefill_tps.append(prefill_tp)
+            decode_tps.append(decode_tp)
 
             print("=" * 20)
             print("PERFORMANCE BREAKDOWN\n")
