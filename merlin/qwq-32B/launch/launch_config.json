@@ -1,0 +1,25 @@
+{
+    "world_size": 1,
+    "master_addr": "10.10.10.2",
+    "master_port": "9091",
+    "username": "gaven",
+    "shared_exec_args": {
+        "prompt_path": "/mnt/disk3/gaven/ntu_paslab/merlin/prompts/diverse_short.json",
+        "n_prompts": 16,
+        "batch_size": 1,
+        "max_tokens": 128,
+        "hide_resp": false
+    },
+    "nodes": {
+        "10.10.10.2": {
+            "ssh_port": 9046,
+            "node_rank": 0,
+            "ngpus": 4,
+            "script": "/mnt/disk3/gaven/ntu_paslab/merlin/qwq_32B/tp.py",
+            "model_path": "/mnt/disk2/llm_team/silicon_mind/qwq-ffn-attn-tp",
+            "node_id": 0,
+            "profile": false,
+            "profiling_output": "n46-EA-TP-bs16"
+        }
+    }
+}
