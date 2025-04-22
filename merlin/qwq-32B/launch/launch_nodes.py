@@ -136,8 +136,8 @@ def main():
             + f'export PATH="$PATH:/home/{username}/miniconda3/condabin/" && '
             + f"cd /mnt/disk3/{username}/ntu_paslab && "
             + f"git pull origin main && "
-            + f"uv phi/bin/activate && "
-            + f"python /mnt/disk3/gaven/ntu_paslab/merlin/launch/run_node.py "
+            + f"conda activate phi && "
+            + f"python /mnt/disk3/gaven/ntu_paslab/merlin/qwq-32B/launch/run_node.py "
         )
 
         if args.terminate:
