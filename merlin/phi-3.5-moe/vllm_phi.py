@@ -17,8 +17,8 @@ def add_template(tokenizer, prompts: list[str]) -> list[torch.Tensor]:
 
 
 torch.manual_seed(7)
-model_path = "/mnt/disk2/llm_team/silicon_mind/QwQ-32B"
-prompt_path = "/mnt/disk3/gaven/ntu_paslab/merlin/prompts/128.json"
+model_path = "/mnt/disk2/llm_team/Phi-3.5-MoE-instruct"
+prompt_path = "/home/gaven/ntu_paslab/merlin/prompts/128.json"
 n_prompts = 4
 bsz = 2
 
@@ -26,13 +26,12 @@ tokenizer = AutoTokenizer.from_pretrained(model_path)
 llm = LLM(
     model=model_path,
     tensor_parallel_size=4,
-    #enforce_eager=False,
+    enforce_eager=False,
     max_num_seqs=bsz,
     max_model_len=512,
-    #enable_chunked_prefill=False,
-    gpu_memory_utilization=0.75,
-    #max_num_batched_tokens = 2048,
-    trust_remote_code = True,
+    enable_chunked_prefill=False,
+    gpu_memory_utilization=0.8,
+    max_num_batched_tokens = 65536,
 )
 with open(prompt_path, "r") as f:
     prompts = add_template(tokenizer, json.load(f)["prompts"][:n_prompts])
