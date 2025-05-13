@@ -18,9 +18,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 
-prompts = ["Hello, how are you?",
-           "Explain mixture-of-experts.",
-           "Give me a haiku about spring."]
+prompts = ["Hello, how are you?"]
 
 with state.split_between_processes(prompts) as prompt:
     ids  = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
