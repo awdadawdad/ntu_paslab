@@ -23,7 +23,7 @@ prompts = ["Hello, how are you?",
            "Give me a haiku about spring."]
 
 with state.split_between_processes(prompts) as prompt:
-    ids  = tokenizer(prompt, return_tensors="pt", padding=True, runcation=True).to(device)
+    ids  = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
     with torch.no_grad():
         out = model.generate(**ids, max_new_tokens=64)
     print(f"[rank={state.process_index}] {tokenizer.decode(out[0], skip_special_tokens=True)}")
