@@ -1,28 +1,26 @@
 # inference.py
-from accelerate import PartialState                    
+from accelerate import PartialState
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+import torch, argparse
 
-state = PartialState()                                 
+parser = argparse.ArgumentParser()
+parser.add_argument("--model_path", required=True)
+args = parser.parse_args()
+
+state  = PartialState()
 device = state.device
 
-model_name = "/mnt/disk2/llm_team/Mixtral-8x7B-Instruct-v0.1"                   
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float16,
-    device_map={"": device},                          
+tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+model     = AutoModelForCausalLM.from_pretrained(
+    args.model_path, torch_dtype=torch.float16, device_map={"": device}
 )
-prompts = [
-    "Hello, how are you?",
-    "Explain mixture-of-experts.",
-    "Give me a haiku about spring."
-]
 
+prompts = ["Hello, how are you?",
+           "Explain mixture-of-experts.",
+           "Give me a haiku about spring."]
 
 with state.split_between_processes(prompts) as prompt:
-    input_ids = tokenizer(prompt, return_tensors="pt").to(device)
+    ids  = tokenizer(prompt, return_tensors="pt").to(device)
     with torch.no_grad():
-        outputs = model.generate(**input_ids, max_new_tokens=64)
-    txt = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"[rank={state.process_index}] {txt}")
+        out = model.generate(**ids, max_new_tokens=64)
+    print(f"[rank={state.process_index}] {tokenizer.decode(out[0], skip_special_tokens=True)}")
