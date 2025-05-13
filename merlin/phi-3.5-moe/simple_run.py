@@ -13,10 +13,8 @@ model = PhiMoEForCausalLM.from_pretrained(
 
 tokenizer = AutoTokenizer.from_pretrained("/mnt/disk2/llm_team/Phi-3.5-MoE-instruct")
 print(tokenizer.pad_token_id)
-prompt =  ["how",
-           "dog",
-           "bird",
-           "dont"]
+prompt =  ["how is dog"
+           ]
 
 pipe = pipeline(
     "text-generation",
@@ -26,7 +24,7 @@ pipe = pipeline(
 )
 
 generation_args = {
-    "max_new_tokens": 128,
+    "max_new_tokens": 2,
     "return_full_text": False,
     "temperature": 0.0,
     "do_sample": False,
