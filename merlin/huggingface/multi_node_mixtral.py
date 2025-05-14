@@ -21,18 +21,6 @@ prompts = [
     "Explain mixture-of-experts.",
     "Give me a haiku about spring.",
     "Summarize the concept of attention in transformers.",
-    "Translate 'machine learning' into French.",
-    "List three applications of large language models.",
-    "Write a short joke about programmers.",
-    "Describe the benefits of pipeline parallelism.",
-    "Give me a motivational quote.",
-    "Explain the difference between CPU and GPU.",
-    "Generate a creative title for an AI research paper.",
-    "Provide a one-sentence definition of federated learning.",
-    "Name two open-source LLM inference frameworks.",
-    "Compose a tweet about sustainable AI.",
-    "Suggest a book on deep learning for beginners.",
-    "Write a farewell message in Japanese."
 ]
 print("Loading model from:", args.model_path)
 
