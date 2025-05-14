@@ -21,6 +21,7 @@ prompts = [
     "Explain mixture-of-experts.",
     "Give me a haiku about spring.",
     "Summarize the concept of attention in transformers.",
+    "how is your day"
 ]
 print("Loading model from:", args.model_path)
 
