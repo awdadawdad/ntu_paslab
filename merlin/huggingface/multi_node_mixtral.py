@@ -25,6 +25,6 @@ print("Loading model from:", args.model_path)
 with state.split_between_processes(prompts) as prompt:
     ids  = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device) #HEREHEREHEREHEREHEREHEREHEREHEREHEREHERE
     with torch.no_grad():
-        out = model.generate(**ids, max_new_tokens=64)
+        out = model.generate(**ids, max_new_tokens=1024)
     print(f"[rank={state.process_index}] {tokenizer.decode(out[0], skip_special_tokens=True)}")
     print(f"[rank={state.process_index}] Using device: {device}, total ranks: {state.num_processes}")
