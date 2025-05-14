@@ -13,7 +13,7 @@ device = state.device
 tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 tokenizer.pad_token = tokenizer.eos_token #HEREHEREHEREHEREHEREHEREHEREHEREHEREHERE
 model     = AutoModelForCausalLM.from_pretrained(
-    args.model_path, torch_dtype="auto", device_map="auto"
+    args.model_path, torch_dtype="auto", device_map={"": device}
 )
 
 prompts = [
