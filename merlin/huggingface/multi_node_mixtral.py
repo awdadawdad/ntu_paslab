@@ -18,10 +18,10 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 
-prompts = ["Hello, how are you?"]
+prompts = ["Hello, how are you?","what is your name?"]
 
 with state.split_between_processes(prompts) as prompt:
     ids  = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(device)
     with torch.no_grad():
-        out = model.generate(**ids, max_new_tokens=64)
+        out = model.generate(**ids, max_new_tokens=128)
     print(f"[rank={state.process_index}] {tokenizer.decode(out[0], skip_special_tokens=True)}")
